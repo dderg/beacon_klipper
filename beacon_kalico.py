@@ -136,6 +136,8 @@ class KalicoSeam:
         extruder = toolhead.get_extruder()
         if extruder is None or contact_probe is None:
             return
+        if not extruder.get_name():
+            return
         curtime = self.printer.get_reactor().monotonic()
         cur_temp = extruder.get_heater().get_status(curtime)["temperature"]
         if cur_temp >= contact_probe.max_hotend_temp:
