@@ -29,6 +29,10 @@ ERR_BEFORE_WINDOW = "before_window"
 ERR_NO_HISTORY = "no_history"
 
 
+def is_cruise_acceleration(accel):
+    return abs(accel) <= CRUISE_ACCEL_TOLERANCE
+
+
 def classify_history_error(message):
     if "is in the future" in message:
         return ERR_FUTURE
@@ -194,3 +198,119 @@ class KalicoSeam:
                 "Toolhead stopped below model range"
             )
         return dist
+
+    def _bridge(self):
+        return self.printer.lookup_object("motion_bridge")
+
+    def position_at_clock(self, clock64):
+        state = self._motion_state(int(clock64))
+        if state is None:
+            return None
+        try:
+            return [state["x"][0], state["y"][0], state["z"][0]]
+        except KeyError:
+            return None
+
+    def position_at_clock32(self, clock32):
+        return self.position_at_clock(self.mcu.clock32_to_clock64(clock32))
+
+    def _motion_state(self, clock64, retried=False):
+        try:
+            return self._bridge().motion_state_at(self.mcu, clock=clock64)
+        except RuntimeError as e:
+            kind = classify_history_error(str(e))
+            if kind == ERR_NO_HISTORY:
+                return None
+            if kind == ERR_BEFORE_WINDOW:
+                self._dropped_samples += 1
+                if self._dropped_samples == 1:
+                    logging.warning(
+                        "beacon: dropping stream sample older than retained"
+                        " motion history: %s", e
+                    )
+                return None
+            if kind == ERR_FUTURE and not retried:
+                reactor = self.printer.get_reactor()
+                reactor.pause(reactor.monotonic() + FUTURE_RETRY_PAUSE)
+                return self._motion_state(clock64, retried=True)
+            raise
+
+    def proximity_descend(self, gcmd, bottom_z, speed):
+        self._descend(gcmd, MODE_PROXIMITY, bottom_z, speed)
+
+    def contact_descend(self, gcmd, bottom_z, speed):
+        trip_pos, final_pos = self._descend(
+            gcmd, MODE_CONTACT, bottom_z, speed
+        )
+        detect_clock = self._query_detect_clock()
+        state = self._bridge().motion_state_at(
+            self.mcu, clock=self.mcu.clock32_to_clock64(detect_clock)
+        )
+        z_pos, z_vel, z_accel = state["z"]
+        if not is_cruise_acceleration(z_accel):
+            raise self.printer.command_error(
+                "beacon: contact triggered while %s (z accel %.3f mm/s^2)"
+                % ("decelerating" if z_accel * z_vel > 0 else "accelerating",
+                   z_accel)
+            )
+        return [final_pos[0], final_pos[1], z_pos]
+
+    def _descend(self, gcmd, mode, bottom_z, speed):
+        printer = self.printer
+        toolhead = printer.lookup_object("toolhead")
+        homing_obj = printer.lookup_object("homing")
+        bridge = printer.lookup_object("motion_bridge")
+        if gcmd is None:
+            gcode = printer.lookup_object("gcode")
+            gcmd = gcode.create_gcode_command(
+                "BEACON_DESCEND", "BEACON_DESCEND", {}
+            )
+        start_z = toolhead.get_position()[Z_AXIS]
+        max_travel = start_z - bottom_z
+        if max_travel <= 0.0:
+            raise printer.command_error(
+                "beacon: descend target %.3f is not below current Z %.3f"
+                % (bottom_z, start_z)
+            )
+        self._mode = mode
+        try:
+            trip_pos, final_pos = homing_obj.trip_move(
+                gcmd,
+                toolhead,
+                bridge,
+                Z_AXIS,
+                -1.0,
+                speed,
+                max_travel,
+                {
+                    "endstop": self.endstop,
+                    "provider": self.beacon,
+                    "trigger_height": None,
+                },
+            )
+        finally:
+            self._mode = None
+        if self.last_reason != REASON_ENDSTOP_HIT:
+            raise printer.command_error(
+                "beacon: descend completed with trsync reason %s, not"
+                " endstop-hit" % (self.last_reason,)
+            )
+        newpos = list(toolhead.get_position())
+        newpos[Z_AXIS] = final_pos[Z_AXIS]
+        toolhead.set_position(newpos)
+        return trip_pos, final_pos
+
+    def _query_detect_clock(self):
+        beacon = self.beacon
+        reactor = self.printer.get_reactor()
+        deadline = reactor.monotonic() + 0.5
+        while True:
+            ret = beacon.beacon_contact_query_cmd.send([])
+            if ret["triggered"]:
+                return ret["detect_clock"]
+            now = reactor.monotonic()
+            if now >= deadline:
+                raise self.printer.command_error(
+                    "Timeout getting contact time"
+                )
+            reactor.pause(now + 0.001)

@@ -328,3 +328,76 @@ def test_trip_move_end_raises_on_comms_timeout():
         assert False, "expected command_error"
     except FakeCommandError:
         pass
+
+
+class FakeBridge:
+    def __init__(self):
+        self.state = {"x": (1.0, 0.0, 0.0), "y": (2.0, 0.0, 0.0),
+                      "z": (3.0, -5.0, 0.0)}
+        self.errors = []
+        self.calls = []
+
+    def motion_state_at(self, mcu, clock=None, print_time=None):
+        self.calls.append(clock)
+        if self.errors:
+            raise RuntimeError(self.errors.pop(0))
+        return self.state
+
+
+def make_seam_with_bridge():
+    seam, beacon, printer, mcu = make_seam()
+    bridge = FakeBridge()
+    printer.objects["motion_bridge"] = bridge
+    return seam, beacon, printer, mcu, bridge
+
+
+def test_position_at_clock_returns_xyz():
+    seam, beacon, printer, mcu, bridge = make_seam_with_bridge()
+    assert seam.position_at_clock(1234) == [1.0, 2.0, 3.0]
+
+
+def test_position_at_clock_no_history_returns_none():
+    seam, beacon, printer, mcu, bridge = make_seam_with_bridge()
+    bridge.errors = ["no motion history recorded for axis ..."]
+    assert seam.position_at_clock(1234) is None
+
+
+def test_position_at_clock_before_window_drops_and_counts():
+    seam, beacon, printer, mcu, bridge = make_seam_with_bridge()
+    bridge.errors = ["query clock 1 precedes retained motion history ..."]
+    assert seam.position_at_clock(1234) is None
+    assert seam._dropped_samples == 1
+
+
+def test_position_at_clock_future_retries_once_then_raises():
+    seam, beacon, printer, mcu, bridge = make_seam_with_bridge()
+    bridge.errors = ["query clock 9 is in the future for axis ..."]
+    assert seam.position_at_clock(1234) == [1.0, 2.0, 3.0]
+    assert len(bridge.calls) == 2
+    assert printer.reactor.paused != []
+    bridge.errors = [
+        "query clock 9 is in the future for axis ...",
+        "query clock 9 is in the future for axis ...",
+    ]
+    try:
+        seam.position_at_clock(1234)
+        assert False, "expected RuntimeError"
+    except RuntimeError:
+        pass
+
+
+def test_position_at_clock_unknown_error_propagates():
+    seam, beacon, printer, mcu, bridge = make_seam_with_bridge()
+    bridge.errors = ["motion_state_at: no axes configured on the bridge"]
+    try:
+        seam.position_at_clock(1234)
+        assert False, "expected RuntimeError"
+    except RuntimeError:
+        pass
+
+
+def test_cruise_check():
+    assert beacon_kalico.is_cruise_acceleration(0.0)
+    assert beacon_kalico.is_cruise_acceleration(0.5)
+    assert not beacon_kalico.is_cruise_acceleration(50.0)
+    assert not beacon_kalico.is_cruise_acceleration(-50.0)
