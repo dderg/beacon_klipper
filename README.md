@@ -1,6 +1,22 @@
-# Beacon Klipper
+# Beacon Klipper — kalico-seam fork
 
-Beacon Klipper is the klipper module for using the [Beacon](https://beacon3d.com) Eddy Current Scanner.
+Fork of [beacon3d/beacon_klipper](https://github.com/beacon3d/beacon_klipper)
+ported to the rewritten motion engine on
+[dderg/kalico `sota-motion`](https://github.com/dderg/kalico/tree/sota-motion).
+
+Upstream beacon.py reaches into klipper internals the rewrite no longer has
+(`HomingMove`, `MCU_trsync`/trdispatch, chelper trapq lookups). This branch
+replaces that integration layer: everything touching the kalico motion engine
+lives in `beacon_kalico.py` (homing provider contract, a single trsync with a
+host-fed deadman, `motion_state_at` for streamed sample positions), while
+`beacon.py` keeps the device protocol and delegates through one-line seams.
+Decision record and design live in the kalico repo under
+`docs/kalico-rewrite/beacon-fork-survey.md` and
+`docs/superpowers/specs/2026-06-12-beacon-fork-seam-design.md`.
+
+`install.sh` links both `beacon.py` and `beacon_kalico.py` into
+`klippy/extras/`. Upstream documentation below still applies for the device
+itself.
 
 ## Documentation
 
