@@ -20,10 +20,17 @@ if [ -e "${KDIR}/klippy/extras/beacon.py" ]; then
     rm "${KDIR}/klippy/extras/beacon.py"
 fi
 ln -s "${BKDIR}/beacon.py" "${KDIR}/klippy/extras/beacon.py"
+if [ -e "${KDIR}/klippy/extras/beacon_kalico.py" ]; then
+    rm "${KDIR}/klippy/extras/beacon_kalico.py"
+fi
+ln -s "${BKDIR}/beacon_kalico.py" "${KDIR}/klippy/extras/beacon_kalico.py"
 
 # exclude beacon.py from klipper git tracking
 if ! grep -q "klippy/extras/beacon.py" "${KDIR}/.git/info/exclude"; then
     echo "klippy/extras/beacon.py" >> "${KDIR}/.git/info/exclude"
+fi
+if ! grep -q "klippy/extras/beacon_kalico.py" "${KDIR}/.git/info/exclude"; then
+    echo "klippy/extras/beacon_kalico.py" >> "${KDIR}/.git/info/exclude"
 fi
 echo "beacon: installation successful."
 
