@@ -264,6 +264,58 @@ def test_trip_move_end_forces_terminal_and_accepts_host_request():
     assert seam.last_reason == beacon_kalico.REASON_HOST_REQUEST
 
 
+def test_setup_bridge_endstop_validates_pin():
+    seam, beacon, printer, mcu = make_seam()
+    good = {"pin": "z_virtual_endstop", "invert": 0, "pullup": 0}
+    assert seam.setup_bridge_endstop(good, 2) is seam.endstop
+    import klippy.pins as pins_mod
+    for bad, axis in (
+        ({"pin": "nope", "invert": 0, "pullup": 0}, 2),
+        ({"pin": "z_virtual_endstop", "invert": 1, "pullup": 0}, 2),
+        ({"pin": "z_virtual_endstop", "invert": 0, "pullup": 0}, 0),
+    ):
+        try:
+            seam.setup_bridge_endstop(bad, axis)
+            assert False, "expected pins.error"
+        except pins_mod.error:
+            pass
+
+
+def test_measured_trip_position_proximity_returns_sampled_dist():
+    seam, beacon, printer, mcu = make_seam()
+    seam.last_reason = beacon_kalico.REASON_ENDSTOP_HIT
+    beacon._sample = lambda skip, count: (1.987, [{"pos": [0, 0, 2.0]}])
+    assert seam.measured_trip_position(2, [0, 0, 2.0], [0, 0, 1.9]) == 1.987
+
+
+def test_measured_trip_position_rejects_non_endstop_reason():
+    seam, beacon, printer, mcu = make_seam()
+    seam.last_reason = beacon_kalico.REASON_HOST_REQUEST
+    try:
+        seam.measured_trip_position(2, [0, 0, 2.0], [0, 0, 1.9])
+        assert False, "expected command_error"
+    except FakeCommandError:
+        pass
+
+
+def test_measured_trip_position_no_model_declines():
+    seam, beacon, printer, mcu = make_seam()
+    seam.last_reason = beacon_kalico.REASON_ENDSTOP_HIT
+    beacon.model = None
+    assert seam.measured_trip_position(2, [0, 0, 2.0], [0, 0, 1.9]) is None
+
+
+def test_measured_trip_position_inf_dist_raises():
+    seam, beacon, printer, mcu = make_seam()
+    seam.last_reason = beacon_kalico.REASON_ENDSTOP_HIT
+    beacon._sample = lambda skip, count: (float("inf"), [])
+    try:
+        seam.measured_trip_position(2, [0, 0, 2.0], [0, 0, 1.9])
+        assert False, "expected command_error"
+    except FakeCommandError:
+        pass
+
+
 def test_trip_move_end_raises_on_comms_timeout():
     seam, beacon, printer, mcu = make_seam()
     seam.trip_move_begin({"endstop": seam.endstop, "provider": beacon,

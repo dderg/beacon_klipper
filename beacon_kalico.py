@@ -164,3 +164,33 @@ class KalicoSeam:
                 "beacon: trsync terminated with reason %d"
                 % (self.last_reason,)
             )
+
+    def setup_bridge_endstop(self, pin_params, axis):
+        if pin_params["pin"] != "z_virtual_endstop" or axis != Z_AXIS:
+            raise pins.error(
+                "beacon only provides z_virtual_endstop on the Z axis"
+            )
+        if pin_params["invert"] or pin_params["pullup"]:
+            raise pins.error(
+                "Can not pullup/invert beacon virtual endstop"
+            )
+        return self.endstop
+
+    def measured_trip_position(self, axis, trip_pos, final_pos):
+        if self.last_reason != REASON_ENDSTOP_HIT:
+            raise self.printer.command_error(
+                "beacon: homing completed with trsync reason %s, not"
+                " endstop-hit" % (self.last_reason,)
+            )
+        beacon = self.beacon
+        if beacon.model is None:
+            return None
+        dist, samples = beacon._sample(beacon.z_settling_time, 10)
+        if math.isinf(dist):
+            logging.error(
+                "beacon post-homing adjustment measured samples %s", samples
+            )
+            raise self.printer.command_error(
+                "Toolhead stopped below model range"
+            )
+        return dist
