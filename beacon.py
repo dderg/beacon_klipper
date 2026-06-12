@@ -12,8 +12,6 @@ import os
 import importlib
 import traceback
 import logging
-import chelper
-import pins
 import math
 import time
 import queue
@@ -28,17 +26,16 @@ from . import probe
 from . import bed_mesh
 from . import thermistor
 from . import adxl345
-from .homing import HomingMove
-from mcu import MCU, MCU_trsync
-from clocksync import SecondarySync
-import configfile
-import msgproto
+from klippy import pins
+from klippy.mcu import MCU
+from klippy.clocksync import SecondarySync
+from klippy import configfile
+from klippy import msgproto
+from . import beacon_kalico
 
 STREAM_BUFFER_LIMIT_DEFAULT = 100
 STREAM_TIMEOUT = 1.0
 API_DUMP_FIELDS = ["dist", "temp", "pos", "freq", "time"]
-
-TRSYNC_TIMEOUT_DEFAULT = 0.025
 
 
 class BeaconProbe:
@@ -84,10 +81,6 @@ class BeaconProbe:
 
         self.contact_latency_min = config.getint("contact_latency_min", 0)
         self.contact_sensitivity = config.getint("contact_sensitivity", 0)
-
-        self.trsync_timeout = config.getfloat(
-            "trsync_timeout", TRSYNC_TIMEOUT_DEFAULT, maxval=0.25
-        )
 
         self.skip_firmware_version_check = config.getboolean(
             "skip_firmware_version_check", False
@@ -140,7 +133,7 @@ class BeaconProbe:
             config.getfloat("filter_alpha", 0.5),
             config.getfloat("filter_beta", 0.000001),
         )
-        self.trapq = None
+        self.kalico_ready = False
         self.mod_axis_twist_comp = None
         self.get_z_compensation_value = lambda pos: 0.0
 
@@ -156,10 +149,11 @@ class BeaconProbe:
         self._mcu.stats = beacon_mcu_stats
         printer.add_object("mcu " + self.name, self._mcu)
         self.cmd_queue = self._mcu.alloc_command_queue()
-        self._endstop_shared = BeaconEndstopShared(self)
-        self.mcu_probe = BeaconEndstopWrapper(self)
-        self.mcu_contact_probe = BeaconContactEndstopWrapper(self, config)
+        self.kalico_seam = beacon_kalico.KalicoSeam(self)
+        self.mcu_contact_probe = BeaconContactProbe(self, config)
         self._current_probe = "proximity"
+        query_endstops = self.printer.load_object(config, "query_endstops")
+        query_endstops.register_endstop(self.kalico_seam.endstop, "probe")
 
         self.beacon_stream_cmd = None
         self.beacon_set_threshold = None
@@ -264,7 +258,6 @@ class BeaconProbe:
     # Event handlers
 
     def _handle_connect(self):
-        self.phoming = self.printer.lookup_object("homing")
         self.mod_axis_twist_comp = self.printer.lookup_object(
             "axis_twist_compensation", None
         )
@@ -399,7 +392,7 @@ class BeaconProbe:
 
             self.toolhead = self.printer.lookup_object("toolhead")
             self.kinematics = self.toolhead.get_kinematics()
-            self.trapq = self.toolhead.get_trapq()
+            self.kalico_ready = True
 
             self.mcu_temp = BeaconMCUTempHelper.build_with_nvm(self)
             self.model_temp = self.model_temp_builder.build_with_nvm(self)
@@ -455,11 +448,27 @@ class BeaconProbe:
     # Virtual endstop
 
     def setup_pin(self, pin_type, pin_params):
-        if pin_type != "endstop" or pin_params["pin"] != "z_virtual_endstop":
-            raise pins.error("Probe virtual endstop only useful as endstop pin")
-        if pin_params["invert"] or pin_params["pullup"]:
-            raise pins.error("Can not pullup/invert probe virtual endstop")
-        return self.mcu_probe
+        raise pins.error(
+            "beacon on kalico resolves probe:z_virtual_endstop via the"
+            " homing provider contract; setup_pin has no users"
+        )
+
+    def setup_bridge_endstop(self, pin_params, axis):
+        return self.kalico_seam.setup_bridge_endstop(pin_params, axis)
+
+    def get_position_endstop(self):
+        return self.trigger_distance
+
+    def trip_move_begin(self, entry):
+        self.kalico_seam.trip_move_begin(entry)
+
+    def trip_move_end(self, entry):
+        self.kalico_seam.trip_move_end(entry)
+
+    def measured_trip_position(self, axis, trip_pos, final_pos):
+        return self.kalico_seam.measured_trip_position(
+            axis, trip_pos, final_pos
+        )
 
     # Probe interface
 
@@ -941,7 +950,7 @@ class BeaconProbe:
             data_smooth = self._data_filter.value()
             freq = self.count_to_freq(data_smooth)
             dist = self.freq_to_dist(freq, temp)
-            pos = self._get_position_at_time(time)
+            pos = self.kalico_seam.position_at_clock(clock)
             if pos is not None:
                 if dist is not None:
                     dist -= self.get_z_compensation_value(pos)
@@ -1002,7 +1011,7 @@ class BeaconProbe:
         self.reactor.register_async_callback(lambda e: self._stream_flush())
 
     def _handle_beacon_data(self, params):
-        if self.trapq is None:
+        if not self.kalico_ready:
             return
 
         buf = bytearray(params["data"])
@@ -1028,16 +1037,6 @@ class BeaconProbe:
         self._stream_buffer.append(samples)
         self._stream_buffer_count += len(samples)
         self._stream_flush_schedule()
-
-    def _get_position_at_time(self, print_time):
-        kin = self.kinematics
-        pos = {
-            s.get_name(): s.mcu_to_commanded_position(
-                s.get_past_mcu_position(print_time)
-            )
-            for s in kin.get_steppers()
-        }
-        return kin.calc_position(pos)
 
     def _sample_printtime_sync(self, skip=0, count=1):
         move_time = self.toolhead.get_last_move_time()
@@ -1447,8 +1446,8 @@ class BeaconProbe:
                     epos = hmove.homing_move(pos, speed, probe_pos=True)[:3]
                     self.toolhead.wait_moves()
                     spos = self.toolhead.get_position()[:3]
-                    armpos = self._get_position_at_time(
-                        self._clock32_to_time(self.last_contact_msg["armed_clock"])
+                    armpos = self.kalico_seam.position_at_clock32(
+                        self.last_contact_msg["armed_clock"]
                     )
                     gcmd.respond_info("Armed at:     z=%.5f" % (armpos[2],))
                     gcmd.respond_info(
