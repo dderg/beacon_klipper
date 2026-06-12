@@ -874,9 +874,10 @@ class BeaconProbe:
             return eventtime + STREAM_TIMEOUT
         if not self._stream_en:
             return self.reactor.NEVER
-        if self._stream_buffer_count > 0:
-            # Samples arrived but nothing flushed them yet: the host reactor
-            # was starved (long native motion call), not the sensor dead.
+        samples_arrived_but_host_starved_the_flush = (
+            self._stream_buffer_count > 0
+        )
+        if samples_arrived_but_host_starved_the_flush:
             return eventtime + STREAM_TIMEOUT
         if not self.printer.is_shutdown():
             msg = "Beacon sensor not receiving data"

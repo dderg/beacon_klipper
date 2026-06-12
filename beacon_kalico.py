@@ -210,7 +210,7 @@ class KalicoSeam:
         return self.printer.lookup_object("motion_bridge")
 
     def position_at_clock(self, clock64):
-        state = self._motion_state(int(clock64))
+        state = self._motion_state_without_pausing_the_reactor(int(clock64))
         if state is None:
             return None
         try:
@@ -221,12 +221,7 @@ class KalicoSeam:
     def position_at_clock32(self, clock32):
         return self.position_at_clock(self.mcu.clock32_to_clock64(clock32))
 
-    def _motion_state(self, clock64):
-        # Runs inside the stream-flush async callback: it must NEVER pause
-        # the reactor (a pause re-enters timer dispatch and lets the stream
-        # watchdog fire mid-flush, shutting the printer down with "sensor
-        # not receiving data" while data is flowing). Unanswerable samples
-        # are dropped, not waited for.
+    def _motion_state_without_pausing_the_reactor(self, clock64):
         try:
             return self._bridge().motion_state_at(self.mcu, clock=clock64)
         except RuntimeError as e:
