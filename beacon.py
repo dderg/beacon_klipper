@@ -34,7 +34,7 @@ from klippy import msgproto
 from . import beacon_kalico
 
 STREAM_BUFFER_LIMIT_DEFAULT = 100
-STREAM_TIMEOUT = 1.0
+STREAM_TIMEOUT = 5.0
 API_DUMP_FIELDS = ["dist", "temp", "pos", "freq", "time"]
 
 
@@ -874,6 +874,10 @@ class BeaconProbe:
             return eventtime + STREAM_TIMEOUT
         if not self._stream_en:
             return self.reactor.NEVER
+        if self._stream_buffer_count > 0:
+            # Samples arrived but nothing flushed them yet: the host reactor
+            # was starved (long native motion call), not the sensor dead.
+            return eventtime + STREAM_TIMEOUT
         if not self.printer.is_shutdown():
             msg = "Beacon sensor not receiving data"
             logging.error(msg)

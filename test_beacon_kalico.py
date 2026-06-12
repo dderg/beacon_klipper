@@ -189,6 +189,31 @@ class FakeBeacon:
         self.sampled_async += 1
         return {"freq": 1.0, "dist": 2.0, "temp": 25.0}
 
+    def streaming_session(self, cb, latency=None):
+        import contextlib
+
+        beacon = self
+
+        @contextlib.contextmanager
+        def session():
+            real_pause = beacon.printer.reactor.pause
+            feed = iter(getattr(beacon, "stream_dists", []))
+
+            def pause_and_feed(until):
+                real_pause(until)
+                try:
+                    cb({"dist": next(feed)})
+                except StopIteration:
+                    pass
+
+            beacon.printer.reactor.pause = pause_and_feed
+            try:
+                yield None
+            finally:
+                beacon.printer.reactor.pause = real_pause
+
+        return session()
+
 
 def make_seam():
     printer = FakePrinter()
@@ -281,10 +306,11 @@ def test_setup_bridge_endstop_validates_pin():
             pass
 
 
-def test_measured_trip_position_proximity_returns_sampled_dist():
+def test_measured_trip_position_retries_past_stale_inf_batches():
     seam, beacon, printer, mcu = make_seam()
     seam.last_reason = beacon_kalico.REASON_ENDSTOP_HIT
-    beacon._sample = lambda skip, count: (1.987, [{"pos": [0, 0, 2.0]}])
+    batches = [(float("inf"), []), (1.987, [])]
+    beacon._sample = lambda skip, count: batches.pop(0)
     assert seam.measured_trip_position(2, [0, 0, 2.0], [0, 0, 1.9]) == 1.987
 
 
@@ -305,7 +331,7 @@ def test_measured_trip_position_no_model_declines():
     assert seam.measured_trip_position(2, [0, 0, 2.0], [0, 0, 1.9]) is None
 
 
-def test_measured_trip_position_inf_dist_raises():
+def test_measured_trip_position_all_inf_raises():
     seam, beacon, printer, mcu = make_seam()
     seam.last_reason = beacon_kalico.REASON_ENDSTOP_HIT
     beacon._sample = lambda skip, count: (float("inf"), [])
@@ -369,21 +395,21 @@ def test_position_at_clock_before_window_drops_and_counts():
     assert seam._dropped_samples == 1
 
 
-def test_position_at_clock_future_retries_once_then_raises():
+def test_position_at_clock_future_drops_without_pausing():
     seam, beacon, printer, mcu, bridge = make_seam_with_bridge()
     bridge.errors = ["query clock 9 is in the future for axis ..."]
-    assert seam.position_at_clock(1234) == [1.0, 2.0, 3.0]
+    assert seam.position_at_clock(1234) is None
+    assert len(bridge.calls) == 1
+    assert printer.reactor.paused == []
+
+
+def test_detect_state_retries_future_then_succeeds():
+    seam, beacon, printer, mcu, bridge = make_seam_with_bridge()
+    bridge.errors = ["query clock 9 is in the future for axis ..."]
+    state = seam._detect_state_with_retry(1234)
+    assert state["z"][0] == 3.0
     assert len(bridge.calls) == 2
     assert printer.reactor.paused != []
-    bridge.errors = [
-        "query clock 9 is in the future for axis ...",
-        "query clock 9 is in the future for axis ...",
-    ]
-    try:
-        seam.position_at_clock(1234)
-        assert False, "expected RuntimeError"
-    except RuntimeError:
-        pass
 
 
 def test_position_at_clock_unknown_error_propagates():

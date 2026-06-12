@@ -191,13 +191,18 @@ class KalicoSeam:
         beacon = self.beacon
         if beacon.model is None:
             return None
-        dist, samples = beacon._sample(beacon.z_settling_time, 10)
-        if math.isinf(dist):
+        dist = None
+        for _ in range(5):
+            dist, samples = beacon._sample(beacon.z_settling_time, 10)
+            if not math.isinf(dist):
+                break
+        if dist is None or math.isinf(dist):
             logging.error(
-                "beacon post-homing adjustment measured samples %s", samples
+                "beacon post-homing adjustment stuck on out-of-range"
+                " samples: %s", samples
             )
             raise self.printer.command_error(
-                "Toolhead stopped below model range"
+                "Toolhead stopped outside model range"
             )
         return dist
 
@@ -216,25 +221,26 @@ class KalicoSeam:
     def position_at_clock32(self, clock32):
         return self.position_at_clock(self.mcu.clock32_to_clock64(clock32))
 
-    def _motion_state(self, clock64, retried=False):
+    def _motion_state(self, clock64):
+        # Runs inside the stream-flush async callback: it must NEVER pause
+        # the reactor (a pause re-enters timer dispatch and lets the stream
+        # watchdog fire mid-flush, shutting the printer down with "sensor
+        # not receiving data" while data is flowing). Unanswerable samples
+        # are dropped, not waited for.
         try:
             return self._bridge().motion_state_at(self.mcu, clock=clock64)
         except RuntimeError as e:
             kind = classify_history_error(str(e))
             if kind == ERR_NO_HISTORY:
                 return None
-            if kind == ERR_BEFORE_WINDOW:
+            if kind in (ERR_BEFORE_WINDOW, ERR_FUTURE):
                 self._dropped_samples += 1
                 if self._dropped_samples == 1:
                     logging.warning(
-                        "beacon: dropping stream sample older than retained"
+                        "beacon: dropping stream sample outside answerable"
                         " motion history: %s", e
                     )
                 return None
-            if kind == ERR_FUTURE and not retried:
-                reactor = self.printer.get_reactor()
-                reactor.pause(reactor.monotonic() + FUTURE_RETRY_PAUSE)
-                return self._motion_state(clock64, retried=True)
             raise
 
     def proximity_descend(self, gcmd, bottom_z, speed):
@@ -245,8 +251,8 @@ class KalicoSeam:
             gcmd, MODE_CONTACT, bottom_z, speed
         )
         detect_clock = self._query_detect_clock()
-        state = self._bridge().motion_state_at(
-            self.mcu, clock=self.mcu.clock32_to_clock64(detect_clock)
+        state = self._detect_state_with_retry(
+            self.mcu.clock32_to_clock64(detect_clock)
         )
         z_pos, z_vel, z_accel = state["z"]
         if not is_cruise_acceleration(z_accel):
@@ -256,6 +262,19 @@ class KalicoSeam:
                    z_accel)
             )
         return [final_pos[0], final_pos[1], z_pos]
+
+    def _detect_state_with_retry(self, clock64):
+        reactor = self.printer.get_reactor()
+        deadline = reactor.monotonic() + 0.5
+        while True:
+            try:
+                return self._bridge().motion_state_at(self.mcu, clock=clock64)
+            except RuntimeError as e:
+                if classify_history_error(str(e)) != ERR_FUTURE:
+                    raise
+                if reactor.monotonic() >= deadline:
+                    raise
+                reactor.pause(reactor.monotonic() + FUTURE_RETRY_PAUSE)
 
     def _descend(self, gcmd, mode, bottom_z, speed):
         printer = self.printer
