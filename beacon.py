@@ -12,8 +12,6 @@ import os
 import importlib
 import traceback
 import logging
-import chelper
-import pins
 import math
 import time
 import queue
@@ -28,17 +26,16 @@ from . import probe
 from . import bed_mesh
 from . import thermistor
 from . import adxl345
-from .homing import HomingMove
-from mcu import MCU, MCU_trsync
-from clocksync import SecondarySync
-import configfile
-import msgproto
+from klippy import pins
+from klippy.mcu import MCU
+from klippy.clocksync import SecondarySync
+from klippy import configfile
+from klippy import msgproto
+from . import beacon_kalico
 
 STREAM_BUFFER_LIMIT_DEFAULT = 100
-STREAM_TIMEOUT = 1.0
+STREAM_TIMEOUT = 5.0
 API_DUMP_FIELDS = ["dist", "temp", "pos", "freq", "time"]
-
-TRSYNC_TIMEOUT_DEFAULT = 0.025
 
 
 class BeaconProbe:
@@ -84,10 +81,6 @@ class BeaconProbe:
 
         self.contact_latency_min = config.getint("contact_latency_min", 0)
         self.contact_sensitivity = config.getint("contact_sensitivity", 0)
-
-        self.trsync_timeout = config.getfloat(
-            "trsync_timeout", TRSYNC_TIMEOUT_DEFAULT, maxval=0.25
-        )
 
         self.skip_firmware_version_check = config.getboolean(
             "skip_firmware_version_check", False
@@ -140,7 +133,7 @@ class BeaconProbe:
             config.getfloat("filter_alpha", 0.5),
             config.getfloat("filter_beta", 0.000001),
         )
-        self.trapq = None
+        self.kalico_ready = False
         self.mod_axis_twist_comp = None
         self.get_z_compensation_value = lambda pos: 0.0
 
@@ -156,10 +149,11 @@ class BeaconProbe:
         self._mcu.stats = beacon_mcu_stats
         printer.add_object("mcu " + self.name, self._mcu)
         self.cmd_queue = self._mcu.alloc_command_queue()
-        self._endstop_shared = BeaconEndstopShared(self)
-        self.mcu_probe = BeaconEndstopWrapper(self)
-        self.mcu_contact_probe = BeaconContactEndstopWrapper(self, config)
+        self.kalico_seam = beacon_kalico.KalicoSeam(self)
+        self.mcu_contact_probe = BeaconContactProbe(self, config)
         self._current_probe = "proximity"
+        query_endstops = self.printer.load_object(config, "query_endstops")
+        query_endstops.register_endstop(self.kalico_seam.endstop, "probe")
 
         self.beacon_stream_cmd = None
         self.beacon_set_threshold = None
@@ -264,7 +258,6 @@ class BeaconProbe:
     # Event handlers
 
     def _handle_connect(self):
-        self.phoming = self.printer.lookup_object("homing")
         self.mod_axis_twist_comp = self.printer.lookup_object(
             "axis_twist_compensation", None
         )
@@ -399,7 +392,7 @@ class BeaconProbe:
 
             self.toolhead = self.printer.lookup_object("toolhead")
             self.kinematics = self.toolhead.get_kinematics()
-            self.trapq = self.toolhead.get_trapq()
+            self.kalico_ready = True
 
             self.mcu_temp = BeaconMCUTempHelper.build_with_nvm(self)
             self.model_temp = self.model_temp_builder.build_with_nvm(self)
@@ -455,11 +448,27 @@ class BeaconProbe:
     # Virtual endstop
 
     def setup_pin(self, pin_type, pin_params):
-        if pin_type != "endstop" or pin_params["pin"] != "z_virtual_endstop":
-            raise pins.error("Probe virtual endstop only useful as endstop pin")
-        if pin_params["invert"] or pin_params["pullup"]:
-            raise pins.error("Can not pullup/invert probe virtual endstop")
-        return self.mcu_probe
+        raise pins.error(
+            "beacon on kalico resolves probe:z_virtual_endstop via the"
+            " homing provider contract; setup_pin has no users"
+        )
+
+    def setup_bridge_endstop(self, pin_params, axis):
+        return self.kalico_seam.setup_bridge_endstop(pin_params, axis)
+
+    def get_position_endstop(self):
+        return self.trigger_distance
+
+    def trip_move_begin(self, entry):
+        self.kalico_seam.trip_move_begin(entry)
+
+    def trip_move_end(self, entry):
+        self.kalico_seam.trip_move_end(entry)
+
+    def measured_trip_position(self, axis, trip_pos, final_pos):
+        return self.kalico_seam.measured_trip_position(
+            axis, trip_pos, final_pos
+        )
 
     # Probe interface
 
@@ -523,15 +532,9 @@ class BeaconProbe:
     def _probing_move_to_probing_height(self, speed):
         curtime = self.reactor.monotonic()
         status = self.kinematics.get_status(curtime)
-        pos = self.toolhead.get_position()
-        pos[2] = status["axis_minimum"][2]
-        try:
-            self.phoming.probing_move(self.mcu_probe, pos, speed)
-        except self.printer.command_error as e:
-            reason = str(e)
-            if "Timeout during probing move" in reason:
-                reason += probe.HINT_TIMEOUT
-            raise self.printer.command_error(reason)
+        self.kalico_seam.proximity_descend(
+            None, status["axis_minimum"][2], speed
+        )
 
     def _probe(self, speed, num_samples=10, allow_faulty=False):
         target = self.trigger_distance
@@ -618,25 +621,12 @@ class BeaconProbe:
     def _probe_contact(self, speed):
         self.toolhead.get_last_move_time()
         self._sample_async()
-        start_pos = self.toolhead.get_position()
-        hmove = HomingMove(self.printer, [(self.mcu_contact_probe, "contact")])
-        pos = start_pos[:]
-        pos[2] = -2
-        try:
-            epos = hmove.homing_move(pos, speed, probe_pos=True)[:3]
-        except self.printer.command_error as e:
-            if self.printer.is_shutdown():
-                reason = "Probing failed due to printer shutdown"
-            else:
-                reason = str(e)
-                if "Timeout during probing move" in reason:
-                    reason += probe.HINT_TIMEOUT
-            raise self.printer.command_error(reason)
-        epos[2] += self.get_z_compensation_value(pos)
+        epos = self.kalico_seam.contact_descend(None, -2.0, speed)
+        epos[2] += self.get_z_compensation_value(epos)
         self.gcode.respond_info(
             "probe at %.3f,%.3f is z=%.6f" % (epos[0], epos[1], epos[2])
         )
-        return epos[:3]
+        return epos
 
     # Accelerometer interface
 
@@ -884,6 +874,11 @@ class BeaconProbe:
             return eventtime + STREAM_TIMEOUT
         if not self._stream_en:
             return self.reactor.NEVER
+        samples_arrived_but_host_starved_the_flush = (
+            self._stream_buffer_count > 0
+        )
+        if samples_arrived_but_host_starved_the_flush:
+            return eventtime + STREAM_TIMEOUT
         if not self.printer.is_shutdown():
             msg = "Beacon sensor not receiving data"
             logging.error(msg)
@@ -941,7 +936,7 @@ class BeaconProbe:
             data_smooth = self._data_filter.value()
             freq = self.count_to_freq(data_smooth)
             dist = self.freq_to_dist(freq, temp)
-            pos = self._get_position_at_time(time)
+            pos = self.kalico_seam.position_at_clock(clock)
             if pos is not None:
                 if dist is not None:
                     dist -= self.get_z_compensation_value(pos)
@@ -1002,7 +997,7 @@ class BeaconProbe:
         self.reactor.register_async_callback(lambda e: self._stream_flush())
 
     def _handle_beacon_data(self, params):
-        if self.trapq is None:
+        if not self.kalico_ready:
             return
 
         buf = bytearray(params["data"])
@@ -1028,16 +1023,6 @@ class BeaconProbe:
         self._stream_buffer.append(samples)
         self._stream_buffer_count += len(samples)
         self._stream_flush_schedule()
-
-    def _get_position_at_time(self, print_time):
-        kin = self.kinematics
-        pos = {
-            s.get_name(): s.mcu_to_commanded_position(
-                s.get_past_mcu_position(print_time)
-            )
-            for s in kin.get_steppers()
-        }
-        return kin.calc_position(pos)
 
     def _sample_printtime_sync(self, skip=0, count=1):
         move_time = self.toolhead.get_last_move_time()
@@ -1440,15 +1425,13 @@ class BeaconProbe:
                 pos = self.toolhead.get_position()
                 self.mcu_contact_probe.activate_gcode.run_gcode_from_command()
                 try:
-                    hmove = HomingMove(
-                        self.printer, [(self.mcu_contact_probe, "contact")]
+                    epos = self.kalico_seam.contact_descend(
+                        gcmd, bottom, speed
                     )
-                    pos[2] = bottom
-                    epos = hmove.homing_move(pos, speed, probe_pos=True)[:3]
                     self.toolhead.wait_moves()
                     spos = self.toolhead.get_position()[:3]
-                    armpos = self._get_position_at_time(
-                        self._clock32_to_time(self.last_contact_msg["armed_clock"])
+                    armpos = self.kalico_seam.position_at_clock32(
+                        self.last_contact_msg["armed_clock"]
                     )
                     gcmd.respond_info("Armed at:     z=%.5f" % (armpos[2],))
                     gcmd.respond_info(
@@ -1536,16 +1519,9 @@ class BeaconProbe:
                 self.toolhead.wait_moves()
                 set_max_accel(desired_accel)
                 try:
-                    hmove = HomingMove(
-                        self.printer, [(self.mcu_contact_probe, "contact")]
+                    epos = self.kalico_seam.contact_descend(
+                        gcmd, home_pos[2], speed
                     )
-                    epos = hmove.homing_move(home_pos, speed, probe_pos=True)
-                except self.printer.command_error:
-                    if self.printer.is_shutdown():
-                        raise self.printer.command_error(
-                            "Homing failed due to printer shutdown"
-                        )
-                    raise
                 finally:
                     set_max_accel(old_max_accel)
 
@@ -2164,173 +2140,8 @@ class BeaconTempWrapper:
         }
 
 
-class BeaconEndstopShared:
-    def __init__(self, beacon):
-        self.beacon = beacon
-
-        ffi_main, ffi_lib = chelper.get_ffi()
-        self._trdispatch = ffi_main.gc(ffi_lib.trdispatch_alloc(), ffi_lib.free)
-        self._trsync = MCU_trsync(self.beacon._mcu, self._trdispatch)
-        self._trsyncs = [self._trsync]
-
-        beacon.printer.register_event_handler(
-            "klippy:mcu_identify", self._handle_mcu_identify
-        )
-
-    def _handle_mcu_identify(self):
-        self.toolhead = self.beacon.printer.lookup_object("toolhead")
-        kin = self.toolhead.get_kinematics()
-        for stepper in kin.get_steppers():
-            if stepper.is_active_axis("z"):
-                self.add_stepper(stepper)
-
-    def add_stepper(self, stepper):
-        trsyncs = {trsync.get_mcu(): trsync for trsync in self._trsyncs}
-        stepper_mcu = stepper.get_mcu()
-        trsync = trsyncs.get(stepper_mcu)
-        if trsync is None:
-            trsync = MCU_trsync(stepper_mcu, self._trdispatch)
-            self._trsyncs.append(trsync)
-        trsync.add_stepper(stepper)
-        # Check for unsupported multi-mcu shared stepper rails, duplicated
-        # from MCU_endstop
-        sname = stepper.get_name()
-        if sname.startswith("stepper_"):
-            for ot in self._trsyncs:
-                for s in ot.get_steppers():
-                    if ot is not trsync and s.get_name().startswith(sname[:9]):
-                        raise self.beacon.printer.config_error(
-                            "Multi-mcu homing not supported on multi-mcu shared axis"
-                        )
-
-    def get_steppers(self):
-        return [s for trsync in self._trsyncs for s in trsync.get_steppers()]
-
-    def trsync_start(self, print_time):
-        self._trigger_completion = self.beacon.reactor.completion()
-        expire_timeout = self.beacon.trsync_timeout
-        for i, trsync in enumerate(self._trsyncs):
-            try:
-                trsync.start(print_time, self._trigger_completion, expire_timeout)
-            except TypeError:
-                offset = float(i) / len(self._trsyncs)
-                trsync.start(
-                    print_time, offset, self._trigger_completion, expire_timeout
-                )
-        ffi_main, ffi_lib = chelper.get_ffi()
-        ffi_lib.trdispatch_start(self._trdispatch, self._trsync.REASON_HOST_REQUEST)
-
-    def trsync_stop(self, home_end_time):
-        self._trsync.set_home_end_time(home_end_time)
-        if self.beacon._mcu.is_fileoutput():
-            self._trigger_completion.complete(True)
-        self._trigger_completion.wait()
-        ffi_main, ffi_lib = chelper.get_ffi()
-        ffi_lib.trdispatch_stop(self._trdispatch)
-        res = [trsync.stop() for trsync in self._trsyncs]
-        if any([r == self._trsync.REASON_COMMS_TIMEOUT for r in res]):
-            cmderr = self.beacon.printer.command_error
-            raise cmderr("Communication timeout during homing")
-        if res[0] != self._trsync.REASON_ENDSTOP_HIT:
-            return 0.0
-        return None
-
-
-class BeaconEndstopWrapper:
-    def __init__(self, beacon):
-        self.beacon = beacon
-        self._shared = beacon._endstop_shared
-
-        printer = beacon.printer
-        printer.register_event_handler(
-            "homing:home_rails_begin", self._handle_home_rails_begin
-        )
-        printer.register_event_handler(
-            "homing:home_rails_end", self._handle_home_rails_end
-        )
-
-        self.is_homing = False
-
-    def _handle_home_rails_begin(self, homing_state, rails):
-        self.is_homing = False
-
-    def _handle_home_rails_end(self, homing_state, rails):
-        if self.beacon.model is None:
-            return
-
-        if not self.is_homing:
-            return
-
-        if 2 not in homing_state.get_axes():
-            return
-
-        # After homing Z we perform a measurement and adjust the toolhead
-        # kinematic position.
-        dist, samples = self.beacon._sample(self.beacon.z_settling_time, 10)
-        if math.isinf(dist):
-            logging.error("Post-homing adjustment measured samples %s", samples)
-            raise self.beacon.printer.command_error(
-                "Toolhead stopped below model range"
-            )
-        homing_state.set_homed_position([None, None, dist])
-
-    def get_mcu(self):
-        return self.beacon._mcu
-
-    def add_stepper(self, stepper):
-        self._shared.add_stepper(stepper)
-
-    def get_steppers(self):
-        return self._shared.get_steppers()
-
-    def home_start(
-        self, print_time, sample_time, sample_count, rest_time, triggered=True
-    ):
-        if self.beacon.model is None:
-            raise self.beacon.printer.command_error("No Beacon model loaded")
-
-        self.is_homing = True
-        self.beacon._apply_threshold()
-        self.beacon._sample_async()
-
-        self._shared.trsync_start(print_time)
-
-        etrsync = self._shared._trsync
-        self.beacon.beacon_home_cmd.send(
-            [
-                etrsync.get_oid(),
-                etrsync.REASON_ENDSTOP_HIT,
-                0,
-            ]
-        )
-        return self._shared._trigger_completion
-
-    def home_wait(self, home_end_time):
-        ret = self._shared.trsync_stop(home_end_time)
-        self.beacon.beacon_stop_home_cmd.send()
-        if ret is not None:
-            return ret
-        return home_end_time
-
-    def query_endstop(self, print_time):
-        if self.beacon.model is None:
-            return 1
-        self.beacon._mcu.print_time_to_clock(print_time)
-        sample = self.beacon._sample_async()
-        if self.beacon.trigger_freq <= sample["freq"]:
-            return 1
-        else:
-            return 0
-
-    def get_position_endstop(self):
-        return self.beacon.trigger_distance
-
-
-class BeaconContactEndstopWrapper:
+class BeaconContactProbe:
     def __init__(self, beacon, config):
-        self.beacon = beacon
-        self._shared = beacon._endstop_shared
-
         gcode_macro = beacon.printer.load_object(config, "gcode_macro")
         self.activate_gcode = gcode_macro.load_template(
             config, "contact_activate_gcode", ""
@@ -2338,97 +2149,9 @@ class BeaconContactEndstopWrapper:
         self.deactivate_gcode = gcode_macro.load_template(
             config, "contact_deactivate_gcode", ""
         )
-        self.max_hotend_temp = config.getfloat("contact_max_hotend_temperature", 180.0)
-
-    def get_mcu(self):
-        return self.beacon._mcu
-
-    def add_stepper(self, stepper):
-        self._shared.add_stepper(stepper)
-
-    def get_steppers(self):
-        return self._shared.get_steppers()
-
-    def home_start(
-        self, print_time, sample_time, sample_count, rest_time, triggered=True
-    ):
-        extruder = self.beacon.toolhead.get_extruder()
-        if extruder is not None:
-            curtime = self.beacon.reactor.monotonic()
-            cur_temp = extruder.get_heater().get_status(curtime)["temperature"]
-            if cur_temp >= self.max_hotend_temp:
-                raise self.beacon.printer.command_error(
-                    "Current hotend temperature %.1f exceeds maximum allowed temperature %.1f"
-                    % (cur_temp, self.max_hotend_temp)
-                )
-
-        self.is_homing = True
-        self.beacon._sample_async()
-        self._shared.trsync_start(print_time)
-        etrsync = self._shared._trsync
-        if self.beacon.beacon_contact_set_latency_min_cmd is not None:
-            self.beacon.beacon_contact_set_latency_min_cmd.send(
-                [self.beacon.contact_latency_min]
-            )
-        if self.beacon.beacon_contact_set_sensitivity_cmd is not None:
-            self.beacon.beacon_contact_set_sensitivity_cmd.send(
-                [self.beacon.contact_sensitivity]
-            )
-        self.beacon.beacon_contact_home_cmd.send(
-            [
-                etrsync.get_oid(),
-                etrsync.REASON_ENDSTOP_HIT,
-                0,
-                0,
-            ]
+        self.max_hotend_temp = config.getfloat(
+            "contact_max_hotend_temperature", 180.0
         )
-        return self._shared._trigger_completion
-
-    def home_wait(self, home_end_time):
-        try:
-            ret = self._shared.trsync_stop(home_end_time)
-            if ret is not None:
-                return ret
-            if self.beacon._mcu.is_fileoutput():
-                return home_end_time
-            self.beacon.toolhead.wait_moves()
-            deadline = self.beacon.reactor.monotonic() + 0.5
-            while True:
-                ret = self.beacon.beacon_contact_query_cmd.send([])
-                if ret["triggered"] == 0:
-                    now = self.beacon.reactor.monotonic()
-                    if now >= deadline:
-                        raise self.beacon.printer.command_error(
-                            "Timeout getting contact time"
-                        )
-                    self.beacon.reactor.pause(now + 0.001)
-                    continue
-                time = self.beacon._clock32_to_time(ret["detect_clock"])
-                ffi_main, ffi_lib = chelper.get_ffi()
-                data = ffi_main.new("struct pull_move[1]")
-                count = ffi_lib.trapq_extract_old(self.beacon.trapq, data, 1, 0.0, time)
-                if time >= home_end_time:
-                    return 0.0
-                if count:
-                    accel = data[0].accel
-                    if accel < 0:
-                        logging.info("Contact triggered while decelerating")
-                        raise self.beacon.printer.command_error(
-                            "No trigger on probe after full movement"
-                        )
-                    elif accel > 0:
-                        raise self.beacon.printer.command_error(
-                            "Contact triggered while accelerating"
-                        )
-                    return time
-        finally:
-            self.beacon.beacon_contact_stop_home_cmd.send()
-
-    def query_endstop(self, print_time):
-        return 0
-
-    def get_position_endstop(self):
-        return 0
 
 
 HOMING_AUTOCAL_CALIBRATE_ALWAYS = 0
@@ -3692,6 +3415,12 @@ class AccelInternalClient:
     def finish_measurements(self):
         self.request_end_time = self.toolhead.get_last_move_time()
         self.toolhead.wait_moves()
+        # kalico's wait_moves() returns at dispatch, and a dwell only bumps the
+        # pending end time (no steps to drain) — flush_step_generation() is what
+        # blocks until the capture window has actually elapsed in real MCU time
+        # and the streamed samples have arrived. No-op on a mainline toolhead
+        # where wait_moves() already blocks until execution.
+        self.toolhead.flush_step_generation()
         self.is_finished = True
 
     def has_valid_samples(self):
