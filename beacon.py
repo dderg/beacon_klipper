@@ -3299,6 +3299,10 @@ class BeaconAccelHelper(object):
         if self._stream_en == 0:
             self._raw_samples = []
             self.accel_stream_cmd.send([1, self._scale["id"]])
+            logging.info(
+                "ACCELDIAG _start_streaming: sent en=1 scale_id=%s",
+                self._scale["id"],
+            )
         self._stream_en += 1
 
     def _stop_streaming(self):
@@ -3363,6 +3367,13 @@ class BeaconAccelHelper(object):
         samples, errors, last_raw_sample = self._process_samples(
             raw_samples, self._last_raw_sample
         )
+        if raw_samples or samples:
+            logging.info(
+                "ACCELDIAG _api_update: raw=%d produced=%d stream_en=%d",
+                len(raw_samples),
+                len(samples),
+                self._stream_en,
+            )
         if len(samples) == 0:
             return
         self._last_raw_sample = last_raw_sample
