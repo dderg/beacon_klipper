@@ -3438,9 +3438,26 @@ class AccelInternalClient:
 
     def get_samples(self):
         if not self.msgs:
+            logging.info(
+                "ACCELDIAG get_samples: msgs=0 window=[%.6f,%.6f]",
+                self.request_start_time,
+                self.request_end_time,
+            )
             return self.samples
 
         total = sum([len(m["data"]) for m in self.msgs])
+        _tmin = min(d[0] for m in self.msgs for d in m["data"])
+        _tmax = max(d[0] for m in self.msgs for d in m["data"])
+        logging.info(
+            "ACCELDIAG get_samples: msgs=%d raw=%d sample_t=[%.6f,%.6f] "
+            "window=[%.6f,%.6f]",
+            len(self.msgs),
+            total,
+            _tmin,
+            _tmax,
+            self.request_start_time,
+            self.request_end_time,
+        )
         count = 0
         self.samples = samples = [None] * total
         for msg in self.msgs:
