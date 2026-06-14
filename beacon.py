@@ -3415,6 +3415,12 @@ class AccelInternalClient:
     def finish_measurements(self):
         self.request_end_time = self.toolhead.get_last_move_time()
         self.toolhead.wait_moves()
+        # kalico's wait_moves() returns at dispatch, and a dwell only bumps the
+        # pending end time (no steps to drain) — flush_step_generation() is what
+        # blocks until the capture window has actually elapsed in real MCU time
+        # and the streamed samples have arrived. No-op on a mainline toolhead
+        # where wait_moves() already blocks until execution.
+        self.toolhead.flush_step_generation()
         self.is_finished = True
 
     def has_valid_samples(self):
