@@ -3299,10 +3299,6 @@ class BeaconAccelHelper(object):
         if self._stream_en == 0:
             self._raw_samples = []
             self.accel_stream_cmd.send([1, self._scale["id"]])
-            logging.info(
-                "ACCELDIAG _start_streaming: sent en=1 scale_id=%s",
-                self._scale["id"],
-            )
         self._stream_en += 1
 
     def _stop_streaming(self):
@@ -3367,13 +3363,6 @@ class BeaconAccelHelper(object):
         samples, errors, last_raw_sample = self._process_samples(
             raw_samples, self._last_raw_sample
         )
-        if raw_samples or samples:
-            logging.info(
-                "ACCELDIAG _api_update: raw=%d produced=%d stream_en=%d",
-                len(raw_samples),
-                len(samples),
-                self._stream_en,
-            )
         if len(samples) == 0:
             return
         self._last_raw_sample = last_raw_sample
@@ -3449,26 +3438,9 @@ class AccelInternalClient:
 
     def get_samples(self):
         if not self.msgs:
-            logging.info(
-                "ACCELDIAG get_samples: msgs=0 window=[%.6f,%.6f]",
-                self.request_start_time,
-                self.request_end_time,
-            )
             return self.samples
 
         total = sum([len(m["data"]) for m in self.msgs])
-        _tmin = min(d[0] for m in self.msgs for d in m["data"])
-        _tmax = max(d[0] for m in self.msgs for d in m["data"])
-        logging.info(
-            "ACCELDIAG get_samples: msgs=%d raw=%d sample_t=[%.6f,%.6f] "
-            "window=[%.6f,%.6f]",
-            len(self.msgs),
-            total,
-            _tmin,
-            _tmax,
-            self.request_start_time,
-            self.request_end_time,
-        )
         count = 0
         self.samples = samples = [None] * total
         for msg in self.msgs:
