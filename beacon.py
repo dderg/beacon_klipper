@@ -453,8 +453,8 @@ class BeaconProbe:
             " homing provider contract; setup_pin has no users"
         )
 
-    def setup_bridge_endstop(self, pin_params, axis):
-        return self.kalico_seam.setup_bridge_endstop(pin_params, axis)
+    def setup_motion_endstop(self, pin_params, axis):
+        return self.kalico_seam.setup_motion_endstop(pin_params, axis)
 
     def get_position_endstop(self):
         return self.trigger_distance
