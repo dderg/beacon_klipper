@@ -1,4 +1,4 @@
-# test_beacon_kalico.py
+# test_beacon_motion_engine.py
 import sys
 import types
 
@@ -30,7 +30,7 @@ def _install_klippy_stubs():
 
 _install_klippy_stubs()
 
-import beacon_kalico  # noqa: E402
+import beacon_motion_engine  # noqa: E402
 
 
 def test_classify_future():
@@ -39,27 +39,27 @@ def test_classify_future():
         "AxisKey { mcu_id: 1, axis: 2 } (now≈100) — motion history "
         "answers the past only"
     )
-    assert beacon_kalico.classify_history_error(msg) == beacon_kalico.ERR_FUTURE
+    assert beacon_motion_engine.classify_history_error(msg) == beacon_motion_engine.ERR_FUTURE
 
 
 def test_classify_before_window():
     msg = "query clock 5 precedes retained motion history for axis ..."
     assert (
-        beacon_kalico.classify_history_error(msg)
-        == beacon_kalico.ERR_BEFORE_WINDOW
+        beacon_motion_engine.classify_history_error(msg)
+        == beacon_motion_engine.ERR_BEFORE_WINDOW
     )
 
 
 def test_classify_no_history():
     msg = "no motion history recorded for axis AxisKey { mcu_id: 1, axis: 2 }"
     assert (
-        beacon_kalico.classify_history_error(msg)
-        == beacon_kalico.ERR_NO_HISTORY
+        beacon_motion_engine.classify_history_error(msg)
+        == beacon_motion_engine.ERR_NO_HISTORY
     )
 
 
 def test_classify_unknown_is_none():
-    assert beacon_kalico.classify_history_error("segfault adjacent") is None
+    assert beacon_motion_engine.classify_history_error("segfault adjacent") is None
 
 
 class FakeReactor:
@@ -219,7 +219,7 @@ def make_seam():
     printer = FakePrinter()
     mcu = FakeMcu()
     beacon = FakeBeacon(printer, mcu)
-    seam = beacon_kalico.KalicoSeam(beacon)
+    seam = beacon_motion_engine.MotionEngineSeam(beacon)
     for cb in mcu.config_cbs:
         cb()
     return seam, beacon, printer, mcu
@@ -237,7 +237,7 @@ def test_terminal_reason_recorded():
     handler({"can_trigger": 1, "trigger_reason": 0})
     assert seam.last_reason is None
     handler({"can_trigger": 0, "trigger_reason": 1})
-    assert seam.last_reason == beacon_kalico.REASON_ENDSTOP_HIT
+    assert seam.last_reason == beacon_motion_engine.REASON_ENDSTOP_HIT
 
 
 def test_proximity_begin_arms_device_and_heartbeat():
@@ -247,10 +247,10 @@ def test_proximity_begin_arms_device_and_heartbeat():
     assert beacon.applied_thresholds == 1
     assert beacon.sampled_async == 1
     assert mcu.sent["trsync_start"] == [
-        [seam.trsync_oid, 0, 0, beacon_kalico.REASON_COMMS_TIMEOUT]
+        [seam.trsync_oid, 0, 0, beacon_motion_engine.REASON_COMMS_TIMEOUT]
     ]
     assert beacon.cmd_log["beacon_home_cmd"] == [
-        [seam.trsync_oid, beacon_kalico.REASON_ENDSTOP_HIT, 0]
+        [seam.trsync_oid, beacon_motion_engine.REASON_ENDSTOP_HIT, 0]
     ]
     assert len(mcu.sent["trsync_set_timeout"]) == 1
     assert len(printer.reactor.timers) == 1
@@ -278,7 +278,7 @@ def test_trip_move_end_forces_terminal_and_accepts_host_request():
     def trigger_and_report(args):
         real_send(args)
         handler({"can_trigger": 0,
-                 "trigger_reason": beacon_kalico.REASON_HOST_REQUEST})
+                 "trigger_reason": beacon_motion_engine.REASON_HOST_REQUEST})
 
     mcu.sent["trsync_trigger"] = type(
         "L", (list,), {"append": lambda self, a: trigger_and_report(a)}
@@ -286,7 +286,7 @@ def test_trip_move_end_forces_terminal_and_accepts_host_request():
     seam.trip_move_end({})
     assert beacon.cmd_log["beacon_stop_home_cmd"] == [[]]
     assert printer.reactor.timers == []
-    assert seam.last_reason == beacon_kalico.REASON_HOST_REQUEST
+    assert seam.last_reason == beacon_motion_engine.REASON_HOST_REQUEST
 
 
 def test_setup_bridge_endstop_validates_pin():
@@ -308,7 +308,7 @@ def test_setup_bridge_endstop_validates_pin():
 
 def test_measured_trip_position_retries_past_stale_inf_batches():
     seam, beacon, printer, mcu = make_seam()
-    seam.last_reason = beacon_kalico.REASON_ENDSTOP_HIT
+    seam.last_reason = beacon_motion_engine.REASON_ENDSTOP_HIT
     batches = [(float("inf"), []), (1.987, [])]
     beacon._sample = lambda skip, count: batches.pop(0)
     assert seam.measured_trip_position(2, [0, 0, 2.0], [0, 0, 1.9]) == 1.987
@@ -316,7 +316,7 @@ def test_measured_trip_position_retries_past_stale_inf_batches():
 
 def test_measured_trip_position_rejects_non_endstop_reason():
     seam, beacon, printer, mcu = make_seam()
-    seam.last_reason = beacon_kalico.REASON_HOST_REQUEST
+    seam.last_reason = beacon_motion_engine.REASON_HOST_REQUEST
     try:
         seam.measured_trip_position(2, [0, 0, 2.0], [0, 0, 1.9])
         assert False, "expected command_error"
@@ -326,14 +326,14 @@ def test_measured_trip_position_rejects_non_endstop_reason():
 
 def test_measured_trip_position_no_model_declines():
     seam, beacon, printer, mcu = make_seam()
-    seam.last_reason = beacon_kalico.REASON_ENDSTOP_HIT
+    seam.last_reason = beacon_motion_engine.REASON_ENDSTOP_HIT
     beacon.model = None
     assert seam.measured_trip_position(2, [0, 0, 2.0], [0, 0, 1.9]) is None
 
 
 def test_measured_trip_position_all_inf_raises():
     seam, beacon, printer, mcu = make_seam()
-    seam.last_reason = beacon_kalico.REASON_ENDSTOP_HIT
+    seam.last_reason = beacon_motion_engine.REASON_ENDSTOP_HIT
     beacon._sample = lambda skip, count: (float("inf"), [])
     try:
         seam.measured_trip_position(2, [0, 0, 2.0], [0, 0, 1.9])
@@ -348,7 +348,7 @@ def test_trip_move_end_raises_on_comms_timeout():
                           "trigger_height": 2.0})
     handler = mcu.responses[("trsync_state", seam.trsync_oid)]
     handler({"can_trigger": 0,
-             "trigger_reason": beacon_kalico.REASON_COMMS_TIMEOUT})
+             "trigger_reason": beacon_motion_engine.REASON_COMMS_TIMEOUT})
     try:
         seam.trip_move_end({})
         assert False, "expected command_error"
@@ -423,7 +423,7 @@ def test_position_at_clock_unknown_error_propagates():
 
 
 def test_cruise_check():
-    assert beacon_kalico.is_cruise_acceleration(0.0)
-    assert beacon_kalico.is_cruise_acceleration(0.5)
-    assert not beacon_kalico.is_cruise_acceleration(50.0)
-    assert not beacon_kalico.is_cruise_acceleration(-50.0)
+    assert beacon_motion_engine.is_cruise_acceleration(0.0)
+    assert beacon_motion_engine.is_cruise_acceleration(0.5)
+    assert not beacon_motion_engine.is_cruise_acceleration(50.0)
+    assert not beacon_motion_engine.is_cruise_acceleration(-50.0)

@@ -1,8 +1,8 @@
-# beacon_kalico.py
-# Kalico integration seam for the Beacon fork. Everything that touches the
-# kalico motion engine lives in this file; beacon.py keeps the device
-# protocol and delegates here. Design:
-# docs/superpowers/specs/2026-06-12-beacon-fork-seam-design.md (kalico repo).
+# beacon_motion_engine.py
+# Motion-engine integration seam for the Beacon fork. Everything that touches
+# the motion engine lives in this file; beacon.py keeps the device protocol
+# and delegates here. Design:
+# docs/superpowers/specs/2026-06-12-beacon-fork-seam-design.md (motion-engine repo).
 import logging
 import math
 
@@ -43,7 +43,7 @@ def classify_history_error(message):
     return None
 
 
-class KalicoSeam:
+class MotionEngineSeam:
     def __init__(self, beacon):
         self.beacon = beacon
         self.printer = beacon.printer
