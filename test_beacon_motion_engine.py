@@ -11,21 +11,21 @@ def _install_klippy_stubs():
         pass
 
     pins.error = PinsError
-    bridge_endstop = types.ModuleType("klippy.bridge_endstop")
+    motion_endstop = types.ModuleType("klippy.motion_endstop")
 
-    class FakeRemoteBridgeEndstop:
+    class FakeRemoteMotionEndstop:
         def __init__(self, printer, mcu, trsync_oid):
             self.printer = printer
             self.mcu = mcu
             self.trsync_oid = trsync_oid
             self.endstop_id = 99
 
-    bridge_endstop.RemoteBridgeEndstop = FakeRemoteBridgeEndstop
+    motion_endstop.RemoteMotionEndstop = FakeRemoteMotionEndstop
     klippy.pins = pins
-    klippy.bridge_endstop = bridge_endstop
+    klippy.motion_endstop = motion_endstop
     sys.modules["klippy"] = klippy
     sys.modules["klippy.pins"] = pins
-    sys.modules["klippy.bridge_endstop"] = bridge_endstop
+    sys.modules["klippy.motion_endstop"] = motion_endstop
 
 
 _install_klippy_stubs()
@@ -356,7 +356,7 @@ def test_trip_move_end_raises_on_comms_timeout():
         pass
 
 
-class FakeBridge:
+class FakeEngine:
     def __init__(self):
         self.state = {"x": (1.0, 0.0, 0.0), "y": (2.0, 0.0, 0.0),
                       "z": (3.0, -5.0, 0.0)}
@@ -370,33 +370,33 @@ class FakeBridge:
         return self.state
 
 
-def make_seam_with_bridge():
+def make_seam_with_engine():
     seam, beacon, printer, mcu = make_seam()
-    bridge = FakeBridge()
-    printer.objects["motion_bridge"] = bridge
-    return seam, beacon, printer, mcu, bridge
+    engine = FakeEngine()
+    printer.objects["motion_engine"] = engine
+    return seam, beacon, printer, mcu, engine
 
 
 def test_position_at_clock_returns_xyz():
-    seam, beacon, printer, mcu, bridge = make_seam_with_bridge()
+    seam, beacon, printer, mcu, bridge = make_seam_with_engine()
     assert seam.position_at_clock(1234) == [1.0, 2.0, 3.0]
 
 
 def test_position_at_clock_no_history_returns_none():
-    seam, beacon, printer, mcu, bridge = make_seam_with_bridge()
+    seam, beacon, printer, mcu, bridge = make_seam_with_engine()
     bridge.errors = ["no motion history recorded for axis ..."]
     assert seam.position_at_clock(1234) is None
 
 
 def test_position_at_clock_before_window_drops_and_counts():
-    seam, beacon, printer, mcu, bridge = make_seam_with_bridge()
+    seam, beacon, printer, mcu, bridge = make_seam_with_engine()
     bridge.errors = ["query clock 1 precedes retained motion history ..."]
     assert seam.position_at_clock(1234) is None
     assert seam._dropped_samples == 1
 
 
 def test_position_at_clock_future_drops_without_pausing():
-    seam, beacon, printer, mcu, bridge = make_seam_with_bridge()
+    seam, beacon, printer, mcu, bridge = make_seam_with_engine()
     bridge.errors = ["query clock 9 is in the future for axis ..."]
     assert seam.position_at_clock(1234) is None
     assert len(bridge.calls) == 1
@@ -404,7 +404,7 @@ def test_position_at_clock_future_drops_without_pausing():
 
 
 def test_detect_state_retries_future_then_succeeds():
-    seam, beacon, printer, mcu, bridge = make_seam_with_bridge()
+    seam, beacon, printer, mcu, bridge = make_seam_with_engine()
     bridge.errors = ["query clock 9 is in the future for axis ..."]
     state = seam._detect_state_with_retry(1234)
     assert state["z"][0] == 3.0
@@ -413,7 +413,7 @@ def test_detect_state_retries_future_then_succeeds():
 
 
 def test_position_at_clock_unknown_error_propagates():
-    seam, beacon, printer, mcu, bridge = make_seam_with_bridge()
+    seam, beacon, printer, mcu, bridge = make_seam_with_engine()
     bridge.errors = ["motion_state_at: no axes configured on the bridge"]
     try:
         seam.position_at_clock(1234)

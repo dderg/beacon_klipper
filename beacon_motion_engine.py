@@ -7,7 +7,7 @@ import logging
 import math
 
 from klippy import pins
-from klippy.bridge_endstop import RemoteBridgeEndstop
+from klippy.motion_endstop import RemoteMotionEndstop
 
 REASON_ENDSTOP_HIT = 1
 REASON_HOST_REQUEST = 2
@@ -49,7 +49,7 @@ class MotionEngineSeam:
         self.printer = beacon.printer
         self.mcu = beacon._mcu
         self.trsync_oid = self.mcu.create_oid()
-        self.endstop = RemoteBridgeEndstop(
+        self.endstop = RemoteMotionEndstop(
             self.printer, self.mcu, trsync_oid=self.trsync_oid
         )
         self.last_reason = None
@@ -206,8 +206,8 @@ class MotionEngineSeam:
             )
         return dist
 
-    def _bridge(self):
-        return self.printer.lookup_object("motion_bridge")
+    def _engine(self):
+        return self.printer.lookup_object("motion_engine")
 
     def position_at_clock(self, clock64):
         state = self._motion_state_without_pausing_the_reactor(int(clock64))
@@ -223,7 +223,7 @@ class MotionEngineSeam:
 
     def _motion_state_without_pausing_the_reactor(self, clock64):
         try:
-            return self._bridge().motion_state_at(self.mcu, clock=clock64)
+            return self._engine().motion_state_at(self.mcu, clock=clock64)
         except RuntimeError as e:
             kind = classify_history_error(str(e))
             if kind == ERR_NO_HISTORY:
@@ -263,7 +263,7 @@ class MotionEngineSeam:
         deadline = reactor.monotonic() + 0.5
         while True:
             try:
-                return self._bridge().motion_state_at(self.mcu, clock=clock64)
+                return self._engine().motion_state_at(self.mcu, clock=clock64)
             except RuntimeError as e:
                 if classify_history_error(str(e)) != ERR_FUTURE:
                     raise
@@ -275,7 +275,7 @@ class MotionEngineSeam:
         printer = self.printer
         toolhead = printer.lookup_object("toolhead")
         homing_obj = printer.lookup_object("homing")
-        bridge = printer.lookup_object("motion_bridge")
+        engine = printer.lookup_object("motion_engine")
         if gcmd is None:
             gcode = printer.lookup_object("gcode")
             gcmd = gcode.create_gcode_command(
@@ -293,7 +293,7 @@ class MotionEngineSeam:
             trip_pos, final_pos = homing_obj.trip_move(
                 gcmd,
                 toolhead,
-                bridge,
+                engine,
                 Z_AXIS,
                 -1.0,
                 speed,
