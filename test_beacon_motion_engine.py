@@ -289,10 +289,10 @@ def test_trip_move_end_forces_terminal_and_accepts_host_request():
     assert seam.last_reason == beacon_motion_engine.REASON_HOST_REQUEST
 
 
-def test_setup_bridge_endstop_validates_pin():
+def test_setup_motion_endstop_validates_pin():
     seam, beacon, printer, mcu = make_seam()
     good = {"pin": "z_virtual_endstop", "invert": 0, "pullup": 0}
-    assert seam.setup_bridge_endstop(good, 2) is seam.endstop
+    assert seam.setup_motion_endstop(good, 2) is seam.endstop
     import klippy.pins as pins_mod
     for bad, axis in (
         ({"pin": "nope", "invert": 0, "pullup": 0}, 2),
@@ -300,7 +300,7 @@ def test_setup_bridge_endstop_validates_pin():
         ({"pin": "z_virtual_endstop", "invert": 0, "pullup": 0}, 0),
     ):
         try:
-            seam.setup_bridge_endstop(bad, axis)
+            seam.setup_motion_endstop(bad, axis)
             assert False, "expected pins.error"
         except pins_mod.error:
             pass

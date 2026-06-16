@@ -171,7 +171,7 @@ class MotionEngineSeam:
                 % (self.last_reason,)
             )
 
-    def setup_bridge_endstop(self, pin_params, axis):
+    def setup_motion_endstop(self, pin_params, axis):
         if pin_params["pin"] != "z_virtual_endstop" or axis != Z_AXIS:
             raise pins.error(
                 "beacon only provides z_virtual_endstop on the Z axis"
