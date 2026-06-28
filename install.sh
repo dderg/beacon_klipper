@@ -14,24 +14,22 @@ fi
 echo "beacon: installing python requirements to env, this may take 10+ minutes."
 "${KENV}/bin/pip" install -r "${BKDIR}/requirements.txt"
 
-# update link to beacon.py
-echo "beacon: linking klippy to beacon.py."
-if [ -e "${KDIR}/klippy/extras/beacon.py" ]; then
-    rm "${KDIR}/klippy/extras/beacon.py"
-fi
-ln -s "${BKDIR}/beacon.py" "${KDIR}/klippy/extras/beacon.py"
-if [ -e "${KDIR}/klippy/extras/beacon_kalico.py" ]; then
-    rm "${KDIR}/klippy/extras/beacon_kalico.py"
-fi
-ln -s "${BKDIR}/beacon_kalico.py" "${KDIR}/klippy/extras/beacon_kalico.py"
-
-# exclude beacon.py from klipper git tracking
-if ! grep -q "klippy/extras/beacon.py" "${KDIR}/.git/info/exclude"; then
-    echo "klippy/extras/beacon.py" >> "${KDIR}/.git/info/exclude"
-fi
-if ! grep -q "klippy/extras/beacon_kalico.py" "${KDIR}/.git/info/exclude"; then
-    echo "klippy/extras/beacon_kalico.py" >> "${KDIR}/.git/info/exclude"
-fi
+# link klippy to the beacon sources. kalico auto-imports every module in
+# extras/, so a leftover beacon_kalico.py (renamed to beacon_motion_engine.py)
+# would be enumerated and fail to import every boot — remove it.
+echo "beacon: linking klippy to beacon sources."
+rm -f "${KDIR}/klippy/extras/beacon_kalico.py"
+for f in beacon.py beacon_motion_engine.py; do
+    dest="${KDIR}/klippy/extras/${f}"
+    if [ -e "$dest" ] || [ -L "$dest" ]; then
+        rm "$dest"
+    fi
+    ln -s "${BKDIR}/${f}" "$dest"
+    # exclude the linked file from klipper git tracking
+    if ! grep -q "klippy/extras/${f}" "${KDIR}/.git/info/exclude"; then
+        echo "klippy/extras/${f}" >> "${KDIR}/.git/info/exclude"
+    fi
+done
 echo "beacon: installation successful."
 
 echo "Updating firmware."

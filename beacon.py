@@ -536,12 +536,23 @@ class BeaconProbe:
             None, status["axis_minimum"][2], speed
         )
 
+    def _require_sample_pos(self, samples):
+        for sample in samples:
+            pos = sample.get("pos")
+            if pos is not None:
+                return pos
+        raise self.printer.command_error(
+            "Beacon probe failed: the motion engine could not resolve a"
+            " toolhead position for any sample in the probe window"
+            " (motion history did not answer the sample clock)."
+        )
+
     def _probe(self, speed, num_samples=10, allow_faulty=False):
         target = self.trigger_distance
         tdt = self.trigger_dive_threshold
         dist, samples = self._sample(5, num_samples)
 
-        x, y = samples[0]["pos"][0:2]
+        x, y = self._require_sample_pos(samples)[0:2]
         if self._is_faulty_coordinate(x, y, True):
             msg = "Probing within a faulty area"
             if not allow_faulty:
@@ -564,7 +575,7 @@ class BeaconProbe:
             self._move_to_probing_height(speed)
             dist, samples = self._sample(self.z_settling_time, num_samples)
 
-        pos = samples[0]["pos"]
+        pos = self._require_sample_pos(samples)
 
         self.gcode.respond_info(
             "probe at %.3f,%.3f,%.3f is z=%.6f" % (pos[0], pos[1], pos[2], dist)
