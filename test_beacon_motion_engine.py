@@ -1,4 +1,4 @@
-# test_beacon_kalico.py
+# test_beacon_motion_engine.py
 import sys
 import types
 
@@ -11,26 +11,26 @@ def _install_klippy_stubs():
         pass
 
     pins.error = PinsError
-    bridge_endstop = types.ModuleType("klippy.bridge_endstop")
+    motion_endstop = types.ModuleType("klippy.motion_endstop")
 
-    class FakeRemoteBridgeEndstop:
+    class FakeRemoteMotionEndstop:
         def __init__(self, printer, mcu, trsync_oid):
             self.printer = printer
             self.mcu = mcu
             self.trsync_oid = trsync_oid
             self.endstop_id = 99
 
-    bridge_endstop.RemoteBridgeEndstop = FakeRemoteBridgeEndstop
+    motion_endstop.RemoteMotionEndstop = FakeRemoteMotionEndstop
     klippy.pins = pins
-    klippy.bridge_endstop = bridge_endstop
+    klippy.motion_endstop = motion_endstop
     sys.modules["klippy"] = klippy
     sys.modules["klippy.pins"] = pins
-    sys.modules["klippy.bridge_endstop"] = bridge_endstop
+    sys.modules["klippy.motion_endstop"] = motion_endstop
 
 
 _install_klippy_stubs()
 
-import beacon_kalico  # noqa: E402
+import beacon_motion_engine  # noqa: E402
 
 
 def test_classify_future():
@@ -39,27 +39,27 @@ def test_classify_future():
         "AxisKey { mcu_id: 1, axis: 2 } (now≈100) — motion history "
         "answers the past only"
     )
-    assert beacon_kalico.classify_history_error(msg) == beacon_kalico.ERR_FUTURE
+    assert beacon_motion_engine.classify_history_error(msg) == beacon_motion_engine.ERR_FUTURE
 
 
 def test_classify_before_window():
     msg = "query clock 5 precedes retained motion history for axis ..."
     assert (
-        beacon_kalico.classify_history_error(msg)
-        == beacon_kalico.ERR_BEFORE_WINDOW
+        beacon_motion_engine.classify_history_error(msg)
+        == beacon_motion_engine.ERR_BEFORE_WINDOW
     )
 
 
 def test_classify_no_history():
     msg = "no motion history recorded for axis AxisKey { mcu_id: 1, axis: 2 }"
     assert (
-        beacon_kalico.classify_history_error(msg)
-        == beacon_kalico.ERR_NO_HISTORY
+        beacon_motion_engine.classify_history_error(msg)
+        == beacon_motion_engine.ERR_NO_HISTORY
     )
 
 
 def test_classify_unknown_is_none():
-    assert beacon_kalico.classify_history_error("segfault adjacent") is None
+    assert beacon_motion_engine.classify_history_error("segfault adjacent") is None
 
 
 class FakeReactor:
@@ -219,7 +219,7 @@ def make_seam():
     printer = FakePrinter()
     mcu = FakeMcu()
     beacon = FakeBeacon(printer, mcu)
-    seam = beacon_kalico.KalicoSeam(beacon)
+    seam = beacon_motion_engine.MotionEngineSeam(beacon)
     for cb in mcu.config_cbs:
         cb()
     return seam, beacon, printer, mcu
@@ -237,7 +237,7 @@ def test_terminal_reason_recorded():
     handler({"can_trigger": 1, "trigger_reason": 0})
     assert seam.last_reason is None
     handler({"can_trigger": 0, "trigger_reason": 1})
-    assert seam.last_reason == beacon_kalico.REASON_ENDSTOP_HIT
+    assert seam.last_reason == beacon_motion_engine.REASON_ENDSTOP_HIT
 
 
 def test_proximity_begin_arms_device_and_heartbeat():
@@ -247,10 +247,10 @@ def test_proximity_begin_arms_device_and_heartbeat():
     assert beacon.applied_thresholds == 1
     assert beacon.sampled_async == 1
     assert mcu.sent["trsync_start"] == [
-        [seam.trsync_oid, 0, 0, beacon_kalico.REASON_COMMS_TIMEOUT]
+        [seam.trsync_oid, 0, 0, beacon_motion_engine.REASON_COMMS_TIMEOUT]
     ]
     assert beacon.cmd_log["beacon_home_cmd"] == [
-        [seam.trsync_oid, beacon_kalico.REASON_ENDSTOP_HIT, 0]
+        [seam.trsync_oid, beacon_motion_engine.REASON_ENDSTOP_HIT, 0]
     ]
     assert len(mcu.sent["trsync_set_timeout"]) == 1
     assert len(printer.reactor.timers) == 1
@@ -278,7 +278,7 @@ def test_trip_move_end_forces_terminal_and_accepts_host_request():
     def trigger_and_report(args):
         real_send(args)
         handler({"can_trigger": 0,
-                 "trigger_reason": beacon_kalico.REASON_HOST_REQUEST})
+                 "trigger_reason": beacon_motion_engine.REASON_HOST_REQUEST})
 
     mcu.sent["trsync_trigger"] = type(
         "L", (list,), {"append": lambda self, a: trigger_and_report(a)}
@@ -286,13 +286,13 @@ def test_trip_move_end_forces_terminal_and_accepts_host_request():
     seam.trip_move_end({})
     assert beacon.cmd_log["beacon_stop_home_cmd"] == [[]]
     assert printer.reactor.timers == []
-    assert seam.last_reason == beacon_kalico.REASON_HOST_REQUEST
+    assert seam.last_reason == beacon_motion_engine.REASON_HOST_REQUEST
 
 
-def test_setup_bridge_endstop_validates_pin():
+def test_setup_motion_endstop_validates_pin():
     seam, beacon, printer, mcu = make_seam()
     good = {"pin": "z_virtual_endstop", "invert": 0, "pullup": 0}
-    assert seam.setup_bridge_endstop(good, 2) is seam.endstop
+    assert seam.setup_motion_endstop(good, 2) is seam.endstop
     import klippy.pins as pins_mod
     for bad, axis in (
         ({"pin": "nope", "invert": 0, "pullup": 0}, 2),
@@ -300,7 +300,7 @@ def test_setup_bridge_endstop_validates_pin():
         ({"pin": "z_virtual_endstop", "invert": 0, "pullup": 0}, 0),
     ):
         try:
-            seam.setup_bridge_endstop(bad, axis)
+            seam.setup_motion_endstop(bad, axis)
             assert False, "expected pins.error"
         except pins_mod.error:
             pass
@@ -308,7 +308,7 @@ def test_setup_bridge_endstop_validates_pin():
 
 def test_measured_trip_position_retries_past_stale_inf_batches():
     seam, beacon, printer, mcu = make_seam()
-    seam.last_reason = beacon_kalico.REASON_ENDSTOP_HIT
+    seam.last_reason = beacon_motion_engine.REASON_ENDSTOP_HIT
     batches = [(float("inf"), []), (1.987, [])]
     beacon._sample = lambda skip, count: batches.pop(0)
     assert seam.measured_trip_position(2, [0, 0, 2.0], [0, 0, 1.9]) == 1.987
@@ -316,7 +316,7 @@ def test_measured_trip_position_retries_past_stale_inf_batches():
 
 def test_measured_trip_position_rejects_non_endstop_reason():
     seam, beacon, printer, mcu = make_seam()
-    seam.last_reason = beacon_kalico.REASON_HOST_REQUEST
+    seam.last_reason = beacon_motion_engine.REASON_HOST_REQUEST
     try:
         seam.measured_trip_position(2, [0, 0, 2.0], [0, 0, 1.9])
         assert False, "expected command_error"
@@ -326,14 +326,14 @@ def test_measured_trip_position_rejects_non_endstop_reason():
 
 def test_measured_trip_position_no_model_declines():
     seam, beacon, printer, mcu = make_seam()
-    seam.last_reason = beacon_kalico.REASON_ENDSTOP_HIT
+    seam.last_reason = beacon_motion_engine.REASON_ENDSTOP_HIT
     beacon.model = None
     assert seam.measured_trip_position(2, [0, 0, 2.0], [0, 0, 1.9]) is None
 
 
 def test_measured_trip_position_all_inf_raises():
     seam, beacon, printer, mcu = make_seam()
-    seam.last_reason = beacon_kalico.REASON_ENDSTOP_HIT
+    seam.last_reason = beacon_motion_engine.REASON_ENDSTOP_HIT
     beacon._sample = lambda skip, count: (float("inf"), [])
     try:
         seam.measured_trip_position(2, [0, 0, 2.0], [0, 0, 1.9])
@@ -348,7 +348,7 @@ def test_trip_move_end_raises_on_comms_timeout():
                           "trigger_height": 2.0})
     handler = mcu.responses[("trsync_state", seam.trsync_oid)]
     handler({"can_trigger": 0,
-             "trigger_reason": beacon_kalico.REASON_COMMS_TIMEOUT})
+             "trigger_reason": beacon_motion_engine.REASON_COMMS_TIMEOUT})
     try:
         seam.trip_move_end({})
         assert False, "expected command_error"
@@ -356,7 +356,7 @@ def test_trip_move_end_raises_on_comms_timeout():
         pass
 
 
-class FakeBridge:
+class FakeEngine:
     def __init__(self):
         self.state = {"x": (1.0, 0.0, 0.0), "y": (2.0, 0.0, 0.0),
                       "z": (3.0, -5.0, 0.0)}
@@ -370,51 +370,51 @@ class FakeBridge:
         return self.state
 
 
-def make_seam_with_bridge():
+def make_seam_with_engine():
     seam, beacon, printer, mcu = make_seam()
-    bridge = FakeBridge()
-    printer.objects["motion_bridge"] = bridge
-    return seam, beacon, printer, mcu, bridge
+    engine = FakeEngine()
+    printer.objects["motion_engine"] = engine
+    return seam, beacon, printer, mcu, engine
 
 
 def test_position_at_clock_returns_xyz():
-    seam, beacon, printer, mcu, bridge = make_seam_with_bridge()
+    seam, beacon, printer, mcu, engine = make_seam_with_engine()
     assert seam.position_at_clock(1234) == [1.0, 2.0, 3.0]
 
 
 def test_position_at_clock_no_history_returns_none():
-    seam, beacon, printer, mcu, bridge = make_seam_with_bridge()
-    bridge.errors = ["no motion history recorded for axis ..."]
+    seam, beacon, printer, mcu, engine = make_seam_with_engine()
+    engine.errors = ["no motion history recorded for axis ..."]
     assert seam.position_at_clock(1234) is None
 
 
 def test_position_at_clock_before_window_drops_and_counts():
-    seam, beacon, printer, mcu, bridge = make_seam_with_bridge()
-    bridge.errors = ["query clock 1 precedes retained motion history ..."]
+    seam, beacon, printer, mcu, engine = make_seam_with_engine()
+    engine.errors = ["query clock 1 precedes retained motion history ..."]
     assert seam.position_at_clock(1234) is None
     assert seam._dropped_samples == 1
 
 
 def test_position_at_clock_future_drops_without_pausing():
-    seam, beacon, printer, mcu, bridge = make_seam_with_bridge()
-    bridge.errors = ["query clock 9 is in the future for axis ..."]
+    seam, beacon, printer, mcu, engine = make_seam_with_engine()
+    engine.errors = ["query clock 9 is in the future for axis ..."]
     assert seam.position_at_clock(1234) is None
-    assert len(bridge.calls) == 1
+    assert len(engine.calls) == 1
     assert printer.reactor.paused == []
 
 
 def test_detect_state_retries_future_then_succeeds():
-    seam, beacon, printer, mcu, bridge = make_seam_with_bridge()
-    bridge.errors = ["query clock 9 is in the future for axis ..."]
+    seam, beacon, printer, mcu, engine = make_seam_with_engine()
+    engine.errors = ["query clock 9 is in the future for axis ..."]
     state = seam._detect_state_with_retry(1234)
     assert state["z"][0] == 3.0
-    assert len(bridge.calls) == 2
+    assert len(engine.calls) == 2
     assert printer.reactor.paused != []
 
 
 def test_position_at_clock_unknown_error_propagates():
-    seam, beacon, printer, mcu, bridge = make_seam_with_bridge()
-    bridge.errors = ["motion_state_at: no axes configured on the bridge"]
+    seam, beacon, printer, mcu, engine = make_seam_with_engine()
+    engine.errors = ["motion_state_at: no axes configured on the engine"]
     try:
         seam.position_at_clock(1234)
         assert False, "expected RuntimeError"
@@ -423,7 +423,7 @@ def test_position_at_clock_unknown_error_propagates():
 
 
 def test_cruise_check():
-    assert beacon_kalico.is_cruise_acceleration(0.0)
-    assert beacon_kalico.is_cruise_acceleration(0.5)
-    assert not beacon_kalico.is_cruise_acceleration(50.0)
-    assert not beacon_kalico.is_cruise_acceleration(-50.0)
+    assert beacon_motion_engine.is_cruise_acceleration(0.0)
+    assert beacon_motion_engine.is_cruise_acceleration(0.5)
+    assert not beacon_motion_engine.is_cruise_acceleration(50.0)
+    assert not beacon_motion_engine.is_cruise_acceleration(-50.0)
