@@ -378,43 +378,43 @@ def make_seam_with_engine():
 
 
 def test_position_at_clock_returns_xyz():
-    seam, beacon, printer, mcu, bridge = make_seam_with_engine()
+    seam, beacon, printer, mcu, engine = make_seam_with_engine()
     assert seam.position_at_clock(1234) == [1.0, 2.0, 3.0]
 
 
 def test_position_at_clock_no_history_returns_none():
-    seam, beacon, printer, mcu, bridge = make_seam_with_engine()
-    bridge.errors = ["no motion history recorded for axis ..."]
+    seam, beacon, printer, mcu, engine = make_seam_with_engine()
+    engine.errors = ["no motion history recorded for axis ..."]
     assert seam.position_at_clock(1234) is None
 
 
 def test_position_at_clock_before_window_drops_and_counts():
-    seam, beacon, printer, mcu, bridge = make_seam_with_engine()
-    bridge.errors = ["query clock 1 precedes retained motion history ..."]
+    seam, beacon, printer, mcu, engine = make_seam_with_engine()
+    engine.errors = ["query clock 1 precedes retained motion history ..."]
     assert seam.position_at_clock(1234) is None
     assert seam._dropped_samples == 1
 
 
 def test_position_at_clock_future_drops_without_pausing():
-    seam, beacon, printer, mcu, bridge = make_seam_with_engine()
-    bridge.errors = ["query clock 9 is in the future for axis ..."]
+    seam, beacon, printer, mcu, engine = make_seam_with_engine()
+    engine.errors = ["query clock 9 is in the future for axis ..."]
     assert seam.position_at_clock(1234) is None
-    assert len(bridge.calls) == 1
+    assert len(engine.calls) == 1
     assert printer.reactor.paused == []
 
 
 def test_detect_state_retries_future_then_succeeds():
-    seam, beacon, printer, mcu, bridge = make_seam_with_engine()
-    bridge.errors = ["query clock 9 is in the future for axis ..."]
+    seam, beacon, printer, mcu, engine = make_seam_with_engine()
+    engine.errors = ["query clock 9 is in the future for axis ..."]
     state = seam._detect_state_with_retry(1234)
     assert state["z"][0] == 3.0
-    assert len(bridge.calls) == 2
+    assert len(engine.calls) == 2
     assert printer.reactor.paused != []
 
 
 def test_position_at_clock_unknown_error_propagates():
-    seam, beacon, printer, mcu, bridge = make_seam_with_engine()
-    bridge.errors = ["motion_state_at: no axes configured on the bridge"]
+    seam, beacon, printer, mcu, engine = make_seam_with_engine()
+    engine.errors = ["motion_state_at: no axes configured on the engine"]
     try:
         seam.position_at_clock(1234)
         assert False, "expected RuntimeError"
