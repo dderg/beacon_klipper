@@ -31,7 +31,7 @@ from klippy.mcu import MCU
 from klippy.clocksync import SecondarySync
 from klippy import configfile
 from klippy import msgproto
-from . import beacon_kalico
+from . import beacon_motion_engine
 
 STREAM_BUFFER_LIMIT_DEFAULT = 100
 STREAM_TIMEOUT = 5.0
@@ -133,7 +133,7 @@ class BeaconProbe:
             config.getfloat("filter_alpha", 0.5),
             config.getfloat("filter_beta", 0.000001),
         )
-        self.kalico_ready = False
+        self.motion_engine_ready = False
         self.mod_axis_twist_comp = None
         self.get_z_compensation_value = lambda pos: 0.0
 
@@ -149,11 +149,11 @@ class BeaconProbe:
         self._mcu.stats = beacon_mcu_stats
         printer.add_object("mcu " + self.name, self._mcu)
         self.cmd_queue = self._mcu.alloc_command_queue()
-        self.kalico_seam = beacon_kalico.KalicoSeam(self)
+        self.motion_engine_seam = beacon_motion_engine.MotionEngineSeam(self)
         self.mcu_contact_probe = BeaconContactProbe(self, config)
         self._current_probe = "proximity"
         query_endstops = self.printer.load_object(config, "query_endstops")
-        query_endstops.register_endstop(self.kalico_seam.endstop, "probe")
+        query_endstops.register_endstop(self.motion_engine_seam.endstop, "probe")
 
         self.beacon_stream_cmd = None
         self.beacon_set_threshold = None
@@ -392,7 +392,7 @@ class BeaconProbe:
 
             self.toolhead = self.printer.lookup_object("toolhead")
             self.kinematics = self.toolhead.get_kinematics()
-            self.kalico_ready = True
+            self.motion_engine_ready = True
 
             self.mcu_temp = BeaconMCUTempHelper.build_with_nvm(self)
             self.model_temp = self.model_temp_builder.build_with_nvm(self)
@@ -449,24 +449,24 @@ class BeaconProbe:
 
     def setup_pin(self, pin_type, pin_params):
         raise pins.error(
-            "beacon on kalico resolves probe:z_virtual_endstop via the"
+            "beacon on this fork resolves probe:z_virtual_endstop via the"
             " homing provider contract; setup_pin has no users"
         )
 
     def setup_motion_endstop(self, pin_params, axis):
-        return self.kalico_seam.setup_motion_endstop(pin_params, axis)
+        return self.motion_engine_seam.setup_motion_endstop(pin_params, axis)
 
     def get_position_endstop(self):
         return self.trigger_distance
 
     def trip_move_begin(self, entry):
-        self.kalico_seam.trip_move_begin(entry)
+        self.motion_engine_seam.trip_move_begin(entry)
 
     def trip_move_end(self, entry):
-        self.kalico_seam.trip_move_end(entry)
+        self.motion_engine_seam.trip_move_end(entry)
 
     def measured_trip_position(self, axis, trip_pos, final_pos):
-        return self.kalico_seam.measured_trip_position(
+        return self.motion_engine_seam.measured_trip_position(
             axis, trip_pos, final_pos
         )
 
@@ -532,7 +532,7 @@ class BeaconProbe:
     def _probing_move_to_probing_height(self, speed):
         curtime = self.reactor.monotonic()
         status = self.kinematics.get_status(curtime)
-        self.kalico_seam.proximity_descend(
+        self.motion_engine_seam.proximity_descend(
             None, status["axis_minimum"][2], speed
         )
 
@@ -621,7 +621,7 @@ class BeaconProbe:
     def _probe_contact(self, speed):
         self.toolhead.get_last_move_time()
         self._sample_async()
-        epos = self.kalico_seam.contact_descend(None, -2.0, speed)
+        epos = self.motion_engine_seam.contact_descend(None, -2.0, speed)
         epos[2] += self.get_z_compensation_value(epos)
         self.gcode.respond_info(
             "probe at %.3f,%.3f is z=%.6f" % (epos[0], epos[1], epos[2])
@@ -936,7 +936,7 @@ class BeaconProbe:
             data_smooth = self._data_filter.value()
             freq = self.count_to_freq(data_smooth)
             dist = self.freq_to_dist(freq, temp)
-            pos = self.kalico_seam.position_at_clock(clock)
+            pos = self.motion_engine_seam.position_at_clock(clock)
             if pos is not None:
                 if dist is not None:
                     dist -= self.get_z_compensation_value(pos)
@@ -997,7 +997,7 @@ class BeaconProbe:
         self.reactor.register_async_callback(lambda e: self._stream_flush())
 
     def _handle_beacon_data(self, params):
-        if not self.kalico_ready:
+        if not self.motion_engine_ready:
             return
 
         buf = bytearray(params["data"])
@@ -1425,12 +1425,12 @@ class BeaconProbe:
                 pos = self.toolhead.get_position()
                 self.mcu_contact_probe.activate_gcode.run_gcode_from_command()
                 try:
-                    epos = self.kalico_seam.contact_descend(
+                    epos = self.motion_engine_seam.contact_descend(
                         gcmd, bottom, speed
                     )
                     self.toolhead.wait_moves()
                     spos = self.toolhead.get_position()[:3]
-                    armpos = self.kalico_seam.position_at_clock32(
+                    armpos = self.motion_engine_seam.position_at_clock32(
                         self.last_contact_msg["armed_clock"]
                     )
                     gcmd.respond_info("Armed at:     z=%.5f" % (armpos[2],))
@@ -1519,7 +1519,7 @@ class BeaconProbe:
                 self.toolhead.wait_moves()
                 set_max_accel(desired_accel)
                 try:
-                    epos = self.kalico_seam.contact_descend(
+                    epos = self.motion_engine_seam.contact_descend(
                         gcmd, home_pos[2], speed
                     )
                 finally:
@@ -3415,12 +3415,6 @@ class AccelInternalClient:
     def finish_measurements(self):
         self.request_end_time = self.toolhead.get_last_move_time()
         self.toolhead.wait_moves()
-        # kalico's wait_moves() returns at dispatch, and a dwell only bumps the
-        # pending end time (no steps to drain) — flush_step_generation() is what
-        # blocks until the capture window has actually elapsed in real MCU time
-        # and the streamed samples have arrived. No-op on a mainline toolhead
-        # where wait_moves() already blocks until execution.
-        self.toolhead.flush_step_generation()
         self.is_finished = True
 
     def has_valid_samples(self):
