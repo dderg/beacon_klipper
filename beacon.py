@@ -749,7 +749,15 @@ class BeaconProbe:
         finally:
             self._stop_streaming()
 
-        # Fit the sampled data
+        # Fit the sampled data. Samples whose position the motion engine
+        # could not resolve (e.g. streamed before the contact re-anchor but
+        # flushed after it) carry no "pos" and are excluded.
+        samples = [s for s in samples if "pos" in s]
+        if not samples:
+            raise self.printer.command_error(
+                "beacon: calibration collected no samples with a"
+                " resolvable toolhead position"
+            )
         z_offset = [s["pos"][2] for s in samples]
         freq = [s["freq"] for s in samples]
         temp = [s["temp"] for s in samples]
