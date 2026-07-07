@@ -2825,6 +2825,7 @@ class BeaconMeshHelper:
         no_pos_samples = [0]
         out_of_grid_samples = [0]
         cluster_size_excluded_samples = [0]
+        xy_bounds = [None, None, None, None]  # x_min, x_max, y_min, y_max
 
         def cb(sample):
             total_samples[0] += 1
@@ -2835,6 +2836,14 @@ class BeaconMeshHelper:
             x, y, z = sample["pos"][:3]
             x += xo
             y += yo
+            if xy_bounds[0] is None or x < xy_bounds[0]:
+                xy_bounds[0] = x
+            if xy_bounds[1] is None or x > xy_bounds[1]:
+                xy_bounds[1] = x
+            if xy_bounds[2] is None or y < xy_bounds[2]:
+                xy_bounds[2] = y
+            if xy_bounds[3] is None or y > xy_bounds[3]:
+                xy_bounds[3] = y
 
             if d is None or math.isinf(d):
                 if self._is_valid_position(x, y):
@@ -2880,6 +2889,23 @@ class BeaconMeshHelper:
         gcmd.respond_info(
             "Sampled %d total points over %d runs" % (total_samples[0], runs)
         )
+        if xy_bounds[0] is not None:
+            gcmd.respond_info(
+                "Sensor-space XY seen: x=%.3f..%.3f y=%.3f..%.3f "
+                "(mesh grid x=%.3f..%.3f y=%.3f..%.3f, step=%.3f,%.3f)"
+                % (
+                    xy_bounds[0],
+                    xy_bounds[1],
+                    xy_bounds[2],
+                    xy_bounds[3],
+                    min_x,
+                    min_x + (self.res_x - 1) * self.step_x,
+                    min_y,
+                    min_y + (self.res_y - 1) * self.step_y,
+                    self.step_x,
+                    self.step_y,
+                )
+            )
         if no_pos_samples[0]:
             gcmd.respond_info(
                 "!! %d samples had no resolvable toolhead position!"
