@@ -2822,9 +2822,15 @@ class BeaconMeshHelper:
         clusters = {}
         total_samples = [0]
         invalid_samples = [0]
+        no_pos_samples = [0]
+        out_of_grid_samples = [0]
+        cluster_size_excluded_samples = [0]
 
         def cb(sample):
             total_samples[0] += 1
+            if "pos" not in sample:
+                no_pos_samples[0] += 1
+                return
             d = sample["dist"]
             x, y, z = sample["pos"][:3]
             x += xo
@@ -2839,6 +2845,7 @@ class BeaconMeshHelper:
             xi = int(round((x - min_x) / self.step_x))
             yi = int(round((y - min_y) / self.step_y))
             if xi < 0 or self.res_x <= xi or yi < 0 or self.res_y <= yi:
+                out_of_grid_samples[0] += 1
                 return
 
             # If there's a cluster size limit, apply it here
@@ -2849,6 +2856,7 @@ class BeaconMeshHelper:
                 dy = y - yf
                 dist = math.sqrt(dx * dx + dy * dy)
                 if dist > cs:
+                    cluster_size_excluded_samples[0] += 1
                     return
 
             # If we are looking for a zero reference, check if we
@@ -2872,11 +2880,40 @@ class BeaconMeshHelper:
         gcmd.respond_info(
             "Sampled %d total points over %d runs" % (total_samples[0], runs)
         )
+        if no_pos_samples[0]:
+            gcmd.respond_info(
+                "!! %d samples had no resolvable toolhead position!"
+                % (no_pos_samples[0],)
+            )
         if invalid_samples[0]:
             gcmd.respond_info(
                 "!! Encountered %d invalid samples!" % (invalid_samples[0],)
             )
+        if out_of_grid_samples[0]:
+            gcmd.respond_info(
+                "!! %d samples fell outside the mesh grid!"
+                % (out_of_grid_samples[0],)
+            )
+        if cluster_size_excluded_samples[0]:
+            gcmd.respond_info(
+                "!! %d samples excluded by CLUSTER_SIZE!"
+                % (cluster_size_excluded_samples[0],)
+            )
         gcmd.respond_info("Samples binned in %d clusters" % (len(clusters),))
+        if total_samples[0] > 0 and not clusters:
+            raise self.beacon.printer.command_error(
+                "beacon: sampled %d points but none landed in a mesh cluster "
+                "(no_pos=%d, invalid=%d, out_of_grid=%d, cluster_size_excluded=%d) "
+                "— check mesh bounds and beacon x_offset/y_offset against the "
+                "scan path"
+                % (
+                    total_samples[0],
+                    no_pos_samples[0],
+                    invalid_samples[0],
+                    out_of_grid_samples[0],
+                    cluster_size_excluded_samples[0],
+                )
+            )
 
         return clusters
 
@@ -2958,7 +2995,7 @@ class BeaconMeshHelper:
 
     def _generate_matrix(self, raw_clusters, mask):
         faulty_indexes = []
-        matrix = np.empty((self.res_y, self.res_x))
+        matrix = np.full((self.res_y, self.res_x), np.nan)
         for (x, y), values in raw_clusters.items():
             if mask is None or mask[(y, x)]:
                 matrix[(y, x)] = self.beacon.trigger_distance - median(values)
