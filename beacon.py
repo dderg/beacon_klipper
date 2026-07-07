@@ -148,7 +148,6 @@ class BeaconProbe:
 
         self._mcu.stats = beacon_mcu_stats
         printer.add_object("mcu " + self.name, self._mcu)
-        self.cmd_queue = self._mcu.alloc_command_queue()
         self.motion_engine_seam = beacon_motion_engine.MotionEngineSeam(self)
         self.mcu_contact_probe = BeaconContactProbe(self, config)
         self._current_probe = "proximity"
@@ -335,48 +334,37 @@ class BeaconProbe:
         version_info = self._check_mcu_version()
 
         try:
-            self.beacon_stream_cmd = self._mcu.lookup_command(
-                "beacon_stream en=%u", cq=self.cmd_queue
-            )
+            self.beacon_stream_cmd = self._mcu.lookup_command("beacon_stream en=%u")
             self.beacon_set_threshold = self._mcu.lookup_command(
-                "beacon_set_threshold trigger=%u untrigger=%u", cq=self.cmd_queue
+                "beacon_set_threshold trigger=%u untrigger=%u"
             )
             self.beacon_home_cmd = self._mcu.lookup_command(
-                "beacon_home trsync_oid=%c trigger_reason=%c trigger_invert=%c",
-                cq=self.cmd_queue,
+                "beacon_home trsync_oid=%c trigger_reason=%c trigger_invert=%c"
             )
-            self.beacon_stop_home_cmd = self._mcu.lookup_command(
-                "beacon_stop_home", cq=self.cmd_queue
-            )
+            self.beacon_stop_home_cmd = self._mcu.lookup_command("beacon_stop_home")
             self.beacon_nvm_read_cmd = self._mcu.lookup_query_command(
                 "beacon_nvm_read len=%c offset=%hu",
                 "beacon_nvm_data bytes=%*s offset=%hu",
-                cq=self.cmd_queue,
             )
             self.beacon_contact_home_cmd = self._mcu.lookup_command(
-                "beacon_contact_home trsync_oid=%c trigger_reason=%c trigger_type=%c",
-                cq=self.cmd_queue,
+                "beacon_contact_home trsync_oid=%c trigger_reason=%c trigger_type=%c"
             )
             self.beacon_contact_query_cmd = self._mcu.lookup_query_command(
                 "beacon_contact_query",
                 "beacon_contact_state triggered=%c detect_clock=%u",
-                cq=self.cmd_queue,
             )
             self.beacon_contact_stop_home_cmd = self._mcu.lookup_command(
-                "beacon_contact_stop_home",
-                cq=self.cmd_queue,
+                "beacon_contact_stop_home"
             )
             try:
                 self.beacon_contact_set_latency_min_cmd = self._mcu.lookup_command(
-                    "beacon_contact_set_latency_min latency_min=%c",
-                    cq=self.cmd_queue,
+                    "beacon_contact_set_latency_min latency_min=%c"
                 )
             except msgproto.error:
                 pass
             try:
                 self.beacon_contact_set_sensitivity_cmd = self._mcu.lookup_command(
-                    "beacon_contact_set_sensitivity sensitivity=%c",
-                    cq=self.cmd_queue,
+                    "beacon_contact_set_sensitivity sensitivity=%c"
                 )
             except msgproto.error:
                 pass
@@ -3240,7 +3228,7 @@ class BeaconAccelHelper(object):
         self._clip_values = (2 ** (bits - 1) - 1, -(2 ** (bits - 1)))
 
         self.accel_stream_cmd = self.beacon._mcu.lookup_command(
-            "beacon_accel_stream en=%c scale=%c", cq=self.beacon.cmd_queue
+            "beacon_accel_stream en=%c scale=%c"
         )
         # Ensure streaming mode is stopped
         self.accel_stream_cmd.send([0, 0])
