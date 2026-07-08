@@ -53,6 +53,7 @@ class MotionEngineSeam:
             self.printer, self.mcu, trsync_oid=self.trsync_oid
         )
         self.last_reason = None
+        self._detect_clock = None
         self._mode = None
         self._heartbeat_timer = None
         self._trsync_start_cmd = None
@@ -83,6 +84,7 @@ class MotionEngineSeam:
 
     def _arm_trsync(self):
         self.last_reason = None
+        self._detect_clock = None
         self._trsync_start_cmd.send(
             [self.trsync_oid, 0, 0, REASON_COMMS_TIMEOUT]
         )
@@ -155,8 +157,6 @@ class MotionEngineSeam:
         beacon = self.beacon
         if mode == MODE_PROXIMITY:
             beacon.beacon_stop_home_cmd.send([])
-        else:
-            beacon.beacon_contact_stop_home_cmd.send([])
         self._trsync_trigger_cmd.send([self.trsync_oid, REASON_HOST_REQUEST])
         deadline = reactor.monotonic() + TERMINAL_REASON_DEADLINE
         while self.last_reason is None:
@@ -165,6 +165,14 @@ class MotionEngineSeam:
                     "beacon: no terminal trsync_state received after homing"
                 )
             reactor.pause(reactor.monotonic() + 0.010)
+        if mode == MODE_CONTACT:
+            # beacon_contact_stop_home discards the firmware's contact
+            # state, so the detect clock must be read before it is sent.
+            try:
+                if self.last_reason == REASON_ENDSTOP_HIT:
+                    self._detect_clock = self._query_detect_clock()
+            finally:
+                beacon.beacon_contact_stop_home_cmd.send([])
         if self.last_reason not in (REASON_ENDSTOP_HIT, REASON_HOST_REQUEST):
             raise self.printer.command_error(
                 "beacon: trsync terminated with reason %d"
@@ -245,9 +253,12 @@ class MotionEngineSeam:
         trip_pos, final_pos = self._descend(
             gcmd, MODE_CONTACT, bottom_z, speed
         )
-        detect_clock = self._query_detect_clock()
+        if self._detect_clock is None:
+            raise self.printer.command_error(
+                "beacon: contact trip ended without a detect clock"
+            )
         state = self._detect_state_with_retry(
-            self.mcu.clock32_to_clock64(detect_clock)
+            self.mcu.clock32_to_clock64(self._detect_clock)
         )
         z_pos, z_vel, z_accel = state["z"]
         if not is_cruise_acceleration(z_accel):
