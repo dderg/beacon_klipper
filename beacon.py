@@ -970,6 +970,13 @@ class BeaconProbe:
                 del last["dist"]
             self.last_received_sample = last
 
+    def _stream_drain(self):
+        if self._stream_buffer:
+            self._stream_samples_queue.put_nowait(self._stream_buffer)
+            self._stream_buffer = []
+            self._stream_buffer_count = 0
+        self._stream_flush()
+
     def _stream_flush(self):
         self._stream_flush_event.clear()
         updated_timer = False
@@ -2068,6 +2075,7 @@ class StreamingHelper:
     def stop(self):
         if self not in self.beacon._stream_callbacks:
             return
+        self.beacon._stream_drain()
         del self.beacon._stream_callbacks[self]
         self.beacon._stop_streaming()
         if self.latency_key is not None:
