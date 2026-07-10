@@ -2711,6 +2711,12 @@ class BeaconMeshHelper:
         self.toolhead = self.beacon.toolhead
         path = self._generate_path()
 
+        # Scan with no active mesh, like stock BedMeshCalibrate: with the old
+        # mesh still warping the toolhead, the measured distances bake the old
+        # correction in and the new (replacing, not composing) mesh captures
+        # only the residual — systematic under-correction on every re-mesh.
+        self.bm.set_mesh(None)
+
         probe_speed = gcmd.get_float("PROBE_SPEED", self.beacon.speed, above=0.0)
         self.beacon._move_to_probing_height(probe_speed)
 
