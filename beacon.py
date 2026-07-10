@@ -3408,7 +3408,7 @@ class BeaconAccelHelper(object):
             )
             data = bytearray(sample["data"])
             count = int(len(data) / ACCEL_BYTES_PER_SAMPLE)
-            dt = (tend - tstart) / (count - 1)
+            dt = (tend - tstart) / (count - 1) if count > 1 else 0.0
             for idx in range(0, count):
                 base = idx * ACCEL_BYTES_PER_SAMPLE
                 d = data[base : base + ACCEL_BYTES_PER_SAMPLE]
